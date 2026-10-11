@@ -18,10 +18,10 @@ disassembler (`CONVERT.EXE`, image offset `0x54E6`) and verified against all
 | Containers `.ASK`, `.PCK`, "raw block" | ✅ complete |
 | Codec (LZSS) | ✅ complete, byte-exact |
 | Plane / bit layout | ✅ proven from the GVRAM blit code |
-| Extraction of 360 images to PNG | ✅ |
+| Extraction to PNG | ✅ 361 pictures (348 `.PCK` entries, 12 `.ASK` frames, the raw-block `S_ROLL.ASK`) |
 | Palette mechanism | ✅ proven |
 | Palettes from `.GCP` / `CHARA.PCK` | ✅ (2 custom out of 26) |
-| Palettes of the artwork screens (e.g. the equip screen) | ⚠️ not in the shipped data — needs a capture from the emulator, see [`docs/PALETTE.md`](docs/PALETTE.md) |
+| Palettes of the artwork screens (e.g. the equip screen) | ✅ the tables ship inside the EXEs (48 bytes, channel order B,R,G) — `tools/pal_tables.py`; a capture only says *which* table, see [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md) |
 | `.GCP` as a raster format | ❌ it is a GDC display list, not a picture |
 | Compressor | ❌ not recovered (it is in `CONVERT.EXE`) |
 
@@ -98,7 +98,8 @@ for i, blob in parse_archive("FACE.PCK"):
 
 ```
 python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
-                     [--palette pc98|gray|vivid] [--pal FILE.pal] [--scale N]
+                     [--palette pc98|gray|vivid] [--pal FILE.pal]
+                     [--pal-exe FILE.EXE:0xOFFSET] [--raw-geom WxH] [--scale N]
 ```
 
 | option | effect |
@@ -109,10 +110,13 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 | `--palette gray` | greyscale — best for inspecting geometry |
 | `--palette vivid` | high-contrast colours |
 | `--pal FILE.pal` | your own palette (JASC-PAL, raw 768 bytes, 48 bytes, or text) |
+| `--pal-exe FILE.EXE:0xOFFSET` | **a real screen palette**, read from the 48-byte table inside an EXE — `BRIEFING.EXE:0x234C6` (equip artwork), `TACTICS.EXE:0x1ECA4` (gameplay), `PD2SHELL.EXE:0x98E6` (menu) |
+| `--raw-geom WxH` | geometry for a "raw block" `.ASK`; derived from `decoded_size` by default (`S_ROLL.ASK` → 640x320) |
 | `--scale N` | integer upscale (nearest neighbour) |
 
 For archives a subdirectory per archive is created; file names are
-`<archive>_<index>.png`.
+`<archive>_<index>.png`. A full `--all` run of the HDI data writes **361**
+pictures: 348 `.PCK` entries, 12 `.ASK` frames and the raw-block `S_ROLL.ASK`.
 
 ### `pd2pal.py` — palettes
 
@@ -131,6 +135,24 @@ GVRAM from a save state (`Vga.bin`). It prints a `confidence`; if that is low,
 the screenshot and the save state are from different screens.
 See [`docs/PALETTE.md`](docs/PALETTE.md).
 
+### `tools/pal_tables.py` — the palette banks inside the EXEs
+
+The screens' palettes are not stored next to their pixels, but the game ships
+whole banks of 48-byte palettes inside its executables (channel order **B,R,G**).
+This tool finds them, extracts them and locates the source of a live dump:
+
+```
+python tools\pal_tables.py --list  [--data DIR ...] [--out tables.txt]
+python tools\pal_tables.py --dump  OUTDIR [--data DIR ...]
+python tools\pal_tables.py --find  DUMP_analog.rgb
+python tools\pal_tables.py --self-test
+```
+
+Found in the shipped HDI+FDI data: **127 tables in 22 files, 59 distinct
+palettes** (e.g. `TACTICS.EXE 0x1ECA4` — the gameplay screen, `BRIEFING.EXE
+0x234C6` — the shared artwork/equip palette, `PD2SHELL.EXE 0x98E6` — the menu).
+See [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md).
+
 ### `pd2raw.py` — `.SLD` "raw blocks"
 
 ```
@@ -139,7 +161,9 @@ python pd2raw.py --all  DIR      -o OUTDIR
 ```
 
 Same LZSS, but the container is just `u32 decoded_size` plus a stream from
-offset 4. Every `.SLD` and also `S_ROLL.ASK` are built this way.
+offset 4. Every `.SLD` and also `S_ROLL.ASK` are built this way. Detection lives
+in `pd2img.is_raw_block`, so `pd2extract.py` renders such a file as a picture
+too (geometry from `decoded_size`, or `--raw-geom WxH`).
 
 ### `tools/verify.py` — self-check
 
@@ -193,6 +217,7 @@ Full breakdown: [`docs/FORMAT.md`](docs/FORMAT.md).
 |---|---|
 | [`docs/FORMAT.md`](docs/FORMAT.md) | **deep dive:** all containers, the exact codec algorithm, state, bit reader, tokens, the two pitfalls, output layout, proof of correctness |
 | [`docs/PALETTE.md`](docs/PALETTE.md) | palette: mechanism, 32-byte format, where it is, where it is not, how to obtain it |
+| [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md) | **correction:** the screens' palettes *are* in the files — 48-byte banks inside the EXEs, channel order B,R,G, and how to find/extract them |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md) | HDI boot/load chain, `EXEC` map, decoder locations in 15 binaries, how to resolve DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.md) | the traps that derailed earlier investigations (so you do not repeat them) |
 
@@ -202,9 +227,12 @@ Ukrainian originals: [`README.uk.md`](README.uk.md), `docs/*.uk.md`.
 
 ## Limitations
 
-* **The palettes of the artwork screens are not in the files.** Extracted PNGs
-  have correct geometry but default colours. How to get the real ones —
-  [`docs/PALETTE.md`](docs/PALETTE.md) §4.
+* **The screens' palettes are in the executables, not in the artwork.** They are
+  48-byte tables (channel order B,R,G, banks every `0x60`/`0xC0` bytes) — extract
+  them with `tools/pal_tables.py`, see [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md).
+  A live dump is only needed to learn which table a screen uses. Extracted PNGs
+  therefore have correct geometry, and correct colours once you pass the right
+  table via `--pal`.
 * **`.GCP` is not decoded** — it is a display list for the hardware GDC, not a
   raster format.
 * **The compressor** was not recovered; it is in `CONVERT.EXE` (look next to

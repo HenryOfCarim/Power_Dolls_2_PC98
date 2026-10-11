@@ -84,17 +84,30 @@ index :  R G B
 
 ## 3. Where the palette is NOT — verified exhaustively
 
+> **Corrected 2026-10-11.** The conclusion drawn below was wrong as a general
+> statement, and the reason is instructive: the tables are stored with the
+> channels in **(B, R, G)** order — a *cyclic rotation*, which the `rgb`/`grb`/
+> `bgr` permutations used here never produce — and the 16 reference colours
+> measured from the screenshot were attached to the **wrong indices** (same
+> colour set, permuted entries). With the rotation and a fade ladder the live
+> palettes match stored tables **16/16**: see
+> [`PALETTE_TABLES.md`](PALETTE_TABLES.md) and `tools/pal_tables.py`. The
+> rows below remain valid only for the containers and the save state.
+
 | hypothesis | how it was tested | result |
 |---|---|---|
 | inside `.ASK`/`.PCK` entries | disassembly: the decoder never touches the palette ports | **absent** |
 | "48-byte palette at offset 12" | that is the compressed stream — proven by the code, and by those bytes being identical across different images | **not a palette** |
-| somewhere in the shipped data as a table | every file, **raw and unpacked** (both containers); the 32-byte packed format in all 4 nibble layouts and with the index in any position; 48-byte RGB/GRB/BGR tables; values as `0..15` and as `n*17`; strict bipartite matching against the 16 colours measured from a real screenshot | **0 matches** |
+| somewhere in the shipped data as a table | every file, **raw and unpacked** (both containers); the 32-byte packed format in all 4 nibble layouts and with the index in any position; 48-byte RGB/GRB/BGR tables; values as `0..15` and as `n*17`; strict bipartite matching against the 16 colours measured from a real screenshot | **0 matches** — but the search could not have matched: [see the correction](PALETTE_TABLES.md) |
 | in a DOSBox-X save state | sections `Vga`, `Render`, `Pic`, `Mixer`, `CPU`, `Memory`; element widths of 2/3/4 bytes and several nibble layouts, same matching | **absent** — the PC-98 palette is hardware state and is not serialised |
 
-**Conclusion.** The palette of the artwork screens (in particular the equip
-screen that draws `FACE.PCK`) is assembled in memory by code at run time and is
-never stored in the files as a table. So exact colours must be captured from the
-emulator.
+**Conclusion (superseded).** The palette of the artwork screens is assembled in
+memory at run time from tables the game ships **inside its own EXEs** (48 bytes
+per palette, channel order B,R,G, banks every `0x60`/`0xC0` bytes) and is handed
+to the palette writer at `BRIEFING.EXE` image `0x10A59`. It therefore *is* in the
+files and can be extracted without the emulator — see
+[`PALETTE_TABLES.md`](PALETTE_TABLES.md). Dumping from the emulator is now only
+needed to learn *which* table a given screen uses.
 
 ---
 

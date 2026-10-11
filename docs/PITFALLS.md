@@ -164,3 +164,33 @@ positives or nothing at all.
 * **`pal98 grb`** is the signature of the MAG text palette format, not a
   reference to a palette file. There is no text `.pal` anywhere in the game
   data; the string only exists in the EXEs as a library constant.
+
+---
+
+## 11. "There is no palette in the files" — a wrong conclusion, and why
+
+The most expensive trap after the "48 bytes at offset 12". The screens' palettes
+**are** in the files: 48-byte tables inside the EXEs, in banks with a
+`0x60`/`0xC0` stride. Three reasons made them invisible, and all three are easy
+to repeat:
+
+1. **Channel order.** The tables are stored as **(B, R, G)**: an entry is
+   `(byte[3i+1], byte[3i+2], byte[3i+0])`. Only `rgb`/`grb`/`bgr` were tried —
+   plain swaps, and none of them is the cyclic rotation. The same table scores
+   6/16 as `rgb` and 16/16 as `gbr`.
+2. **A reference palette with permuted indices.** The "16 colours from the
+   screenshot" held the right colour *set* but attached to the wrong entry
+   numbers, so element-wise comparison could never match. Sanity check: compare
+   **multisets**, not arrays; if the sets are equal, look for an index
+   permutation rather than "another palette".
+3. **The fade.** The game dims palettes at run time, so a base table has to be
+   searched across a `scale = k/16` ladder (or with a per-component tolerance).
+
+**How not to repeat it:** before believing any "0 matches", run a **control** —
+the same search against a palette that is known to be in the files (e.g.
+`HARDY.GCP`). `tools/pal_tables.py` has `--self-test` for exactly that, and its
+search tries all six channel orders. A negative result without a control is
+worth nothing.
+
+An emulator capture is now needed only to learn **which** table a given screen
+uses: `tools/pal_tables.py --find capture\game_analog.rgb`.

@@ -6,16 +6,27 @@ Usage:
     python pd2extract.py --ask  <file.ASK>       <outdir>
 Options:
     --palette pc98|gray|vivid   (default pc98)
+    --pal FILE.pal              own palette file
+    --pal-exe FILE.EXE:0xOFFSET a screen palette stored in an EXE, e.g.
+                                BRIEFING.EXE:0x234C6 (equip artwork) or
+                                TACTICS.EXE:0x1ECA4 (gameplay/tactics)
+    --raw-geom WxH              geometry for a "raw block" .ASK (default: derived
+                                from decoded_size, e.g. S_ROLL.ASK = 640x320)
     --scale N                   (default 1)
 
 Handles .ASK standalone pictures and .PCK archives.
 .GCP files are NOT pictures: they are GDI/GDC display lists for the PC-98
 graphics hardware (handler at CONVERT.EXE image 0x5CE2 writes I/O ports 0x7C/0x7E).
+
+A screen palette is a 48-byte table inside the game's EXEs, stored with the
+channels in (B, R, G) order - see docs/PALETTE_TABLES.md and `pd2pal.py --exe`.
 """
 import os, sys, struct, argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pd2img import parse_entry, parse_archive, is_image_entry, planes_from_stream, indices_from_planes
+from pd2img import (parse_entry, parse_archive, is_image_entry, is_raw_block,
+                    raw_geometry, planes_from_stream, indices_from_planes)
+from pd2pal import parse_exe_spec, palette_from_exe_table
 
 # The PC-98 default 16-colour palette, exactly as the game writes it.
 # Taken from the 32-byte packed table at offset 0xB of 24 of the 26 .GCP files,
@@ -70,9 +81,43 @@ def main():
     ap.add_argument('--palette', default='pc98', choices=['pc98', 'gray', 'vivid'])
     ap.add_argument('--pal', metavar='FILE.pal',
                     help='use a palette file (JASC-PAL / raw 768 / 48-byte / 16x"R G B" text)')
+    ap.add_argument('--pal-exe', metavar='FILE.EXE:0xOFFSET',
+                    help='use the 48-byte palette table stored in an EXE, channel order '
+                         'B,R,G (e.g. BRIEFING.EXE:0x234C6, TACTICS.EXE:0x1ECA4); '
+                         'list them with `pd2pal.py --exe FILE.EXE`')
     ap.add_argument('--scale', type=int, default=1)
+    ap.add_argument('--raw-geom', metavar='WxH',
+                    help='geometry for a raw-block .ASK; default derives it from '
+                         'decoded_size (640x320 for S_ROLL.ASK)')
     a = ap.parse_args()
-    if a.pal:
+    raw_geom = None
+    if a.raw_geom:
+        try:
+            w, _, h = a.raw_geom.lower().partition('x')
+            raw_geom = (int(w), int(h))
+        except ValueError:
+            sys.exit(f"--raw-geom wants WxH, got {a.raw_geom!r}")
+    if a.pal_exe:
+        path, off = parse_exe_spec(a.pal_exe)
+        if off is None:
+            sys.exit("--pal-exe needs FILE.EXE:0xOFFSET "
+                     "(list the offsets with `pd2pal.py --exe FILE.EXE`)")
+        try:
+            blob = open(path, 'rb').read()
+        except OSError as e:
+            sys.exit(f"{path}: {e}")
+        try:
+            raw, order = palette_from_exe_table(blob, off)
+        except ValueError as e:
+            sys.exit(f"{path}: {e}")
+        pal = [(r * 17, g * 17, b * 17) for r, g, b in raw]
+        note = "" if order == 'B,R,G' else f" (channel order {order})"
+        if order.endswith('(unverified)'):
+            note += " -- WARNING: does not look like a palette"
+        print(f"palette: {os.path.basename(path)} @ {off:#x}{note}")
+        if a.pal:
+            print("note: --pal-exe wins over --pal")
+    elif a.pal:
         pal = load_palette_file(a.pal)
     else:
         pal = {'pc98': PC98, 'gray': GRAY, 'vivid': VIVID}[a.palette]
@@ -89,15 +134,42 @@ def main():
             print(f"  ! {name}: {e}")
             return False
 
+    def do_ask_file(src, out_path):
+        """A standalone .ASK: normal 12-byte entry, or a "raw block" (S_ROLL.ASK).
+
+        A raw block carries `u32 decoded_size` + LZSS from offset 4 and no
+        geometry, so it is derived from decoded_size (or taken from --raw-geom).
+        """
+        nonlocal n
+        blob = open(src, 'rb').read()
+        if is_image_entry(blob):
+            return do(blob, out_path)
+        raw = is_raw_block(blob)
+        if raw is None:
+            sz, x, y, w, h = struct.unpack_from('<IHHHH', blob, 0)
+            print(f"{os.path.basename(src)}: header does not validate "
+                  f"(decoded_size={sz}, x={x}, y={y}, w={w}, h={h}) -- skipped")
+            return False
+        geom = raw_geom or raw_geometry(len(raw))
+        if geom is None:
+            print(f"  ! {os.path.basename(src)}: raw block of {len(raw)} bytes "
+                  f"({len(raw) * 2} px of 4-plane data) - unknown screen size, "
+                  f"pass --raw-geom WxH")
+            return False
+        w, h = geom
+        try:
+            idx = indices_from_planes(planes_from_stream(raw, w, h), w, h)
+            save_png(w, h, idx, out_path, pal, a.scale)
+            n += 1
+            print(f"{os.path.basename(src)}: raw block -> {w}x{h}")
+            return True
+        except Exception as e:
+            print(f"  ! {out_path}: {e}")
+            return False
+
     if a.ask:
         base = os.path.splitext(os.path.basename(a.ask))[0]
-        blob = open(a.ask, 'rb').read()
-        if not is_image_entry(blob):
-            sz, x, y, w, h = struct.unpack_from('<IHHHH', blob, 0)
-            print(f"{os.path.basename(a.ask)}: header does not validate "
-                  f"(decoded_size={sz}, x={x}, y={y}, w={w}, h={h}) -- skipped")
-            return
-        do(blob, os.path.join(a.outdir, base + '.png'))
+        do_ask_file(a.ask, os.path.join(a.outdir, base + '.png'))
     else:
         if a.all:
             srcs = []
@@ -111,7 +183,7 @@ def main():
             stem = os.path.splitext(os.path.basename(src))[0]
             if src.upper().endswith('.ASK'):
                 print(f"{os.path.basename(src)}")
-                do(open(src, 'rb').read(), os.path.join(a.outdir, stem + '.png'))
+                do_ask_file(src, os.path.join(a.outdir, stem + '.png'))
             else:
                 try:
                     ents = parse_archive(src)

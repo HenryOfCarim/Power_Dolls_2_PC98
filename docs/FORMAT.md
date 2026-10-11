@@ -334,4 +334,6 @@ against GVRAM.
 * **`.GCP` / display lists.** The command semantics were not worked out
   (handler `0x5CE2`). Only needed if these screens must be reproduced without
   the game.
-* **Exact palettes of the artwork screens** — see [`PALETTE.md`](PALETTE.md) §4.
+* **Exact palettes of the artwork screens** — solved: the tables ship inside the
+  EXEs (48 bytes, channel order B,R,G) — [`PALETTE_TABLES.md`](PALETTE_TABLES.md),
+  `tools/pal_tables.py`, or `pd2extract.py --pal-exe "FILE.EXE:0xOFFSET"`.

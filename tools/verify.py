@@ -10,8 +10,9 @@ import os, sys, struct, argparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from pd2img import decode_lzss, parse_archive, is_image_entry
-from pd2pal import palette_from_packed, DEFAULT_PALETTE
+from pd2img import (decode_lzss, parse_archive, is_image_entry, is_raw_block,
+                    raw_geometry)
+from pd2pal import (palette_from_packed, palette_from_exe_table, DEFAULT_PALETTE)
 
 # ---------------------------------------------------------------- expectations
 # decoder entry point in the load image.  Two prologue forms exist:
@@ -58,6 +59,18 @@ EXPECT_PCK_IMAGES = 348
 EXPECT_ASK_IMAGES = 12
 EXPECT_GCP = 26
 EXPECT_GCP_CUSTOM = 2
+
+# Screen palettes: 48-byte tables inside the EXEs, channel order B,R,G.
+# These four were matched 16/16 against live dumps from DOSBox-X; they are what
+# replaced the old (wrong) claim that the screens' palettes are nowhere in the
+# files.  See docs/PALETTE_TABLES.md and tools/pal_tables.py.
+EXPECT_EXE_PALETTES = [
+    ("BRIEFING.EXE", 0x0234C6, "000 fdb fb8 b85 f77 68b 378 ddd 999 666 751 b55 cb8 575 fc7 fff"),
+    ("STARTUP.EXE",  0x009311, "000 fdb eb8 b84 e66 57b 249 ddd 999 555 753 431 0c9 493 fd7 fff"),
+    ("PD2SHELL.EXE", 0x0098E6, "000 972 c84 eb6 a55 38c 457 ddd 999 666 444 436 0c8 483 325 fff"),
+    ("TACTICS.EXE",  0x01ECA4, "000 555 999 ddd f65 77f 04b fff fc8 ea6 a74 150 284 3a4 751 fdb"),
+]
+EXPECT_TABLES_IN_DATA = 44       # palette tables in the HDI PD2D directory
 
 fails, notes = [], []
 
@@ -230,6 +243,46 @@ def verify_palettes(data_root):
           f"{len(custom)} carry a non-default palette: {custom}")
 
 
+def verify_exe_palettes(data_root):
+    print("\n[6] screen palettes: 48-byte tables inside the EXEs (channel order B,R,G)")
+    for name, off, want in EXPECT_EXE_PALETTES:
+        p = os.path.join(data_root, name)
+        if not os.path.isfile(p):
+            check(False, f"{name} is missing")
+            continue
+        blob = open(p, 'rb').read()
+        try:
+            pal, order = palette_from_exe_table(blob, off)
+        except ValueError as e:
+            check(False, f"{name} @ {off:#x}: {e}")
+            continue
+        got = " ".join("%x%x%x" % t for t in pal)
+        check(got == want and order == 'B,R,G',
+              f"{name} @ {off:#x} -> {got if got != want else 'matches the live dump'} "
+              f"(order {order})")
+    try:
+        import pal_tables
+        rows = pal_tables.scan([data_root])
+        check(len(rows) == EXPECT_TABLES_IN_DATA,
+              f"{len(rows)} palette table(s) found in the data dir "
+              f"(expected {EXPECT_TABLES_IN_DATA})")
+    except ImportError:
+        notes.append("tools/pal_tables.py not importable - table-count check skipped")
+
+
+def verify_raw_block(data_root):
+    print("\n[7] raw block: S_ROLL.ASK decodes as `u32 size` + LZSS from offset 4")
+    p = os.path.join(data_root, 'S_ROLL.ASK')
+    if not os.path.isfile(p):
+        notes.append("S_ROLL.ASK not present - raw-block check skipped")
+        return
+    blob = open(p, 'rb').read()
+    out = is_raw_block(blob)
+    geom = raw_geometry(len(out)) if out else None
+    check(out is not None, f"S_ROLL.ASK is a raw block ({len(out) if out else 0} bytes)")
+    check(geom == (640, 320), f"its geometry derives as {geom}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default=os.path.join('..', 'hdi', 'PD2D'),
@@ -248,6 +301,8 @@ def main():
     verify_identity(data_root)
     verify_container(data_root)
     verify_palettes(data_root)
+    verify_exe_palettes(data_root)
+    verify_raw_block(data_root)
 
     print()
     for n in notes:

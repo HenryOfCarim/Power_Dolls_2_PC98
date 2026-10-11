@@ -27,10 +27,10 @@ Products, PC-98, 1994).
 | Контейнери `.ASK`, `.PCK`, «сирий блок» | ✅ повністю |
 | Кодек (LZSS) | ✅ повністю, байт-точно |
 | Розкладка площин і бітів | ✅ доведено кодом вивантаження в GVRAM |
-| Витягування 360 зображень у PNG | ✅ |
+| Витягування у PNG | ✅ 361 картинка (348 записів `.PCK`, 12 кадрів `.ASK`, «сирий блок» `S_ROLL.ASK`) |
 | Механізм установки палітри | ✅ доведено |
 | Палітри з `.GCP` / `CHARA.PCK` | ✅ (2 кастомні з 26) |
-| Палітра художніх екранів (напр. спорядження) | ⚠️ у файлах немає — потрібен знімок з емулятора, див. [`docs/PALETTE.md`](docs/PALETTE.uk.md) |
+| Палітра художніх екранів (напр. спорядження) | ✅ таблиці постачаються в самих EXE (48 байтів, порядок каналів B,R,G) — `tools/pal_tables.py`; знімок з емулятора лише вказує, **яку** таблицю бере екран, див. [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) |
 | `.GCP` як растр | ❌ це display-list для GDC, а не картинка |
 | Компресор | ❌ не відновлювався (він є в `CONVERT.EXE`) |
 
@@ -107,7 +107,8 @@ for i, blob in parse_archive("FACE.PCK"):
 
 ```
 python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
-                     [--palette pc98|gray|vivid] [--pal FILE.pal] [--scale N]
+                     [--palette pc98|gray|vivid] [--pal FILE.pal]
+                     [--pal-exe FILE.EXE:0xOFFSET] [--raw-geom WxH] [--scale N]
 ```
 
 | опція | що робить |
@@ -118,9 +119,13 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 | `--palette gray` | сіра шкала — добре видно геометрію |
 | `--palette vivid` | контрастні кольори |
 | `--pal FILE.pal` | своя палітра (JASC-PAL, сирі 768 байтів, 48 байтів або текст) |
+| `--pal-exe FILE.EXE:0xOFFSET` | **справжня палітра екрана** з 48-байтової таблиці в EXE — `BRIEFING.EXE:0x234C6` (екіпірування/художні), `TACTICS.EXE:0x1ECA4` (геймплей), `PD2SHELL.EXE:0x98E6` (меню) |
+| `--raw-geom WxH` | геометрія для «сирого блоку» `.ASK`; за замовчуванням виводиться з `decoded_size` (`S_ROLL.ASK` → 640x320) |
 | `--scale N` | цілочисельне збільшення (nearest) |
 
 Для архівів створює підтеку на архів; імена файлів — `<архів>_<індекс>.png`.
+Повний прогін `--all` по HDI-даних пише **361** картинку: 348 записів `.PCK`,
+12 кадрів `.ASK` і «сирий блок» `S_ROLL.ASK`.
 
 ### `pd2pal.py` — палітри
 
@@ -138,6 +143,24 @@ python pd2pal.py --default [-o OUT.pal]
 save-state (`Vga.bin`). Друкує `confidence` — якщо він низький, скріншот і
 save-state зняті з різних екранів. Див. [`docs/PALETTE.md`](docs/PALETTE.uk.md).
 
+### `tools/pal_tables.py` — банки палітр усередині EXE
+
+Палітри екранів лежать не поруч із пікселями, а банками 48-байтових таблиць
+усередині самих EXE (порядок каналів **B,R,G**). Інструмент їх знаходить,
+витягує і визначає джерело живого дампа:
+
+```
+python tools\pal_tables.py --list  [--data DIR ...] [--out tables.txt]
+python tools\pal_tables.py --dump  OUTDIR [--data DIR ...]
+python tools\pal_tables.py --find  DUMP_analog.rgb
+python tools\pal_tables.py --self-test
+```
+
+У shipped-даних HDI+FDI знайдено **127 таблиць у 22 файлах, 59 різних палітр**
+(наприклад `TACTICS.EXE 0x1ECA4` — екран геймплею, `BRIEFING.EXE 0x234C6` —
+спільна художня палітра/екіпірування, `PD2SHELL.EXE 0x98E6` — меню).
+Деталі — [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md).
+
 ### `pd2raw.py` — «сирі блоки» `.SLD`
 
 ```
@@ -146,7 +169,9 @@ python pd2raw.py --all  DIR      -o OUTDIR
 ```
 
 Той самий LZSS, але контейнер — просто `u32 decoded_size` + потік зі зсуву 4.
-Так зроблені всі `.SLD` і `S_ROLL.ASK`.
+Так зроблені всі `.SLD` і `S_ROLL.ASK`. Розпізнавання живе в
+`pd2img.is_raw_block`, тому `pd2extract.py` теж рендерить такий файл як
+картинку (геометрія з `decoded_size` або з `--raw-geom WxH`).
 
 ### `tools/verify.py` — самоперевірка
 
@@ -201,6 +226,7 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 |---|---|
 | [`docs/FORMAT.md`](docs/FORMAT.uk.md) | **глибокий огляд:** усі контейнери, точний алгоритм кодека, стан, біт-рідер, токени, пастки, розкладка виводу, доведення правильності |
 | [`docs/PALETTE.md`](docs/PALETTE.uk.md) | палітра: механізм, 32-байтовий формат, де лежить, де її немає, як дістати |
+| [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) | **виправлення:** палітри екранів **є** у файлах — 48-байтові банки в EXE, порядок каналів B,R,G, і як їх знаходити/витягувати |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.uk.md) | порядок завантаження з HDI, карта `EXEC`, таблиця розташування декодера в 15 бінарниках, як резолвити DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.uk.md) | пастки, які збили попередні дослідження (щоб не повторити) |
 
@@ -208,8 +234,12 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 
 ## Обмеження
 
-* **Палітри художніх екранів у файлах немає.** Витягнуті PNG мають правильну
-  геометрію, але дефолтні кольори. Як отримати точні — [`docs/PALETTE.md`](docs/PALETTE.uk.md) §4.
+* **Палітри екранів лежать в EXE, а не в графіці.** Це 48-байтові таблиці
+  (порядок каналів B,R,G, банки з кроком `0x60`/`0xC0`) — витягуються через
+  `tools/pal_tables.py`, див. [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md).
+  Дамп з емулятора потрібен лише щоб дізнатися, яку таблицю використовує екран.
+  Тож витягнуті PNG мають правильну геометрію, а з потрібною таблицею в `--pal` —
+  і правильні кольори.
 * **`.GCP` не декодується** — це display-list для апаратного GDC, не растр.
 * **Компресор** не відновлювався; він є в `CONVERT.EXE` (шукати поруч із
   декодером за образом `0x54E6`).

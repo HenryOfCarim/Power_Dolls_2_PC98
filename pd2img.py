@@ -59,7 +59,8 @@ and are constant across all 26 .GCP-like headers.
 import os, struct
 
 __all__ = ["decode_lzss", "parse_entry", "parse_archive", "parse_ask",
-           "planes_from_stream", "indices_from_planes", "PC98_DEFAULT_PALETTE"]
+           "planes_from_stream", "indices_from_planes", "is_image_entry",
+           "is_raw_block", "raw_geometry", "PC98_DEFAULT_PALETTE"]
 
 RING = 4096
 WPOS0 = 0xFEE
@@ -145,6 +146,43 @@ def parse_archive(path):
 def parse_ask(path):
     """A standalone .ASK / .GCP-style single image file."""
     return parse_entry(open(path, 'rb').read())
+
+
+# ------------------------------------------------------------- "raw block" form
+# A third container form, used by every .SLD and by S_ROLL.ASK:
+#     offset 0  u32 decoded_size
+#     offset 4  ... LZSS stream ...
+# The decoded bytes are the same interleaved 4-plane data a normal entry gives,
+# but the block carries no width/height, so the geometry has to be supplied or
+# derived from decoded_size (w*h/2 == decoded_size).
+RAW_MIN = 16
+RAW_MAX = 8_000_000
+RAW_SIZES = ((640, 320), (640, 400), (640, 200), (320, 200), (640, 480))
+
+
+def is_raw_block(blob):
+    """Decoded bytes if blob is `u32 decoded_size` + LZSS from offset 4, else None."""
+    if len(blob) < RAW_MIN:
+        return None
+    n = struct.unpack_from('<I', blob, 0)[0]
+    if not (RAW_MIN <= n <= RAW_MAX):
+        return None
+    try:
+        out, used = decode_lzss(blob, 4, n)
+    except Exception:
+        return None
+    # the decisive test: the stream must be consumed to the last byte
+    if len(out) == n and used >= len(blob) - 1:
+        return out
+    return None
+
+
+def raw_geometry(decoded_size, sizes=RAW_SIZES):
+    """(w, h) with w*h/2 == decoded_size, or None if no known screen size fits."""
+    for w, h in sizes:
+        if w * h // 2 == decoded_size:
+            return w, h
+    return None
 
 
 def planes_from_stream(stream, w, h, stream_order=(0, 1, 2, 3)):

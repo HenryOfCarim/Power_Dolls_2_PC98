@@ -24,6 +24,24 @@ Where that 32-byte table lives
   carry custom artwork palettes.
 * 27 entries of `CHARA.PCK`, likewise at offset 0xB.
 
+The other palette source: 48-byte tables inside the EXEs
+-------------------------------------------------------
+The artwork screens do not carry a palette next to their pixels; the game ships
+banks of 48-byte palettes **inside its executables** (stride 0x60/0xC0) and hands
+the right one to the writer routine at run time.  The channels are stored as
+**(B, R, G)**, i.e. an entry is `(byte[3i+1], byte[3i+2], byte[3i+0])` - reading
+such a table as plain RGB is why early searches concluded "no palette in the
+files at all" (they also compared against reference colours that were attached
+to the wrong indices).
+
+    TACTICS.EXE  0x1ECA4   gameplay / tactics screen
+    STARTUP.EXE  0x9311    startup screen
+    PD2SHELL.EXE 0x98E6    shell / menu
+    BRIEFING.EXE 0x234C6   shared artwork palette (also CONVERT/OPENING/REPORT/TACTICS)
+
+`--exe FILE.EXE` lists the tables in a binary, `--exe FILE.EXE:0xOFFSET` dumps
+one.  Full inventory: `tools/pal_tables.py`, docs/PALETTE_TABLES.md.
+
 What is NOT a palette source
 ----------------------------
 * `.ASK` / `.PCK` image entries - the container is only
@@ -39,11 +57,26 @@ Usage
     python pd2pal.py --list  hdi/PD2D                 # every palette in the game data
     python pd2pal.py --gcp   hdi/PD2D/HARDY.GCP -o hardy.pal
     python pd2pal.py --pck   hdi/PD2D/CHARA.PCK --entry 3
+    python pd2pal.py --exe   hdi/PD2D/TACTICS.EXE      # list the tables in an EXE
+    python pd2pal.py --exe   hdi/PD2D/TACTICS.EXE:0x1ECA4 -o gameplay.pal
     python pd2pal.py --read  capture/game.pal         # a DOSBox-X .pal sidecar
     python pd2pal.py --shot  capture/game.png --vram dump/Vga.bin -o derived.pal
     python pd2pal.py --default -o pc98default.pal
 """
 import os, sys, struct, argparse, collections
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _d in (os.path.join(_HERE, 'tools'), os.path.join(_HERE, 'pd2gfx', 'tools')):
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.insert(0, _d)
+try:
+    import pal_tables as _tables          # one implementation of the table scan
+except ImportError:                       # pragma: no cover - tools/ ships with it
+    _tables = None
+
+# channel orders tried for a 48-byte table; the engine's own (B,R,G) comes first
+EXE_ORDERS = (('B,R,G', (1, 2, 0)), ('R,G,B', (0, 1, 2)), ('G,R,B', (1, 0, 2)),
+              ('B,G,R', (2, 1, 0)), ('R,B,G', (0, 2, 1)), ('G,B,R', (2, 0, 1)))
 
 DEFAULT_PALETTE = [(0,0,0),(0,0,15),(0,15,0),(0,15,15),(15,0,0),(15,0,15),(15,15,0),(15,15,15),
                    (7,7,7),(0,0,10),(0,10,0),(0,10,10),(10,0,0),(10,0,10),(10,10,0),(10,10,10)]
@@ -71,6 +104,55 @@ def palette_to_packed(pal):
         out.append(((i & 15) << 4) | (r & 15))
         out.append(((g & 15) << 4) | (b & 15))
     return bytes(out)
+
+
+# ------------------------------------------------------------- 48-byte EXE tables
+def parse_exe_spec(spec):
+    """'FILE.EXE:0x234C6' / 'FILE.EXE@0x234C6' -> (path, offset); bare path -> (path, None).
+
+    The last ':' or '@' wins, so a Windows drive letter is not mistaken for one.
+    """
+    for sep in ('@', ':'):
+        if sep in spec:
+            path, _, off = spec.rpartition(sep)
+            if path and off:
+                try:
+                    return path, int(off, 0)
+                except ValueError:
+                    pass
+    return spec, None
+
+
+def palette_from_exe_table(blob, offset, order=None):
+    """Read a 48-byte screen palette out of an EXE.
+
+    Returns (palette, order_label).  `order` defaults to the engine's own
+    (B, R, G); if that does not look like a palette, the other five component
+    orders are tried before giving up.
+    """
+    if offset < 0 or offset + 48 > len(blob):
+        raise ValueError(f"offset {offset:#x} is outside the file ({len(blob)} bytes)")
+    if order is None:
+        candidates = list(EXE_ORDERS)
+    else:
+        matches = [(name, perm) for name, perm in EXE_ORDERS if name == order]
+        if not matches:
+            raise ValueError(f"unknown channel order {order!r}")
+        candidates = matches
+
+    fallback = None
+    for label, perm in candidates:
+        tri = [tuple(blob[offset + 3 * i + q] for q in perm) for i in range(16)]
+        if any(max(t) > 15 for t in tri):
+            continue
+        if tri[0] == (0, 0, 0) and len(set(tri)) >= 10:
+            return tri, label
+        if fallback is None:
+            fallback = (tri, label + " (unverified)")
+    if fallback is None:
+        raise ValueError(f"{offset:#x}: the 48 bytes hold values above 15 - "
+                         "not a 4-bit palette table")
+    return fallback
 
 
 # ------------------------------------------------------------------ .pal files
@@ -178,6 +260,9 @@ def main():
     g.add_argument('--pck', metavar='FILE')
     g.add_argument('--read', metavar='FILE.pal')
     g.add_argument('--shot', metavar='FILE.png')
+    g.add_argument('--exe', metavar='FILE.EXE[:0xOFFSET]',
+                   help='48-byte palette table inside an EXE: bare path lists the '
+                        'tables, FILE:0xOFFSET dumps one')
     g.add_argument('--default', action='store_true')
     ap.add_argument('--entry', type=int, default=None)
     ap.add_argument('--vram', metavar='Vga.bin')
@@ -218,6 +303,29 @@ def main():
         pal = palette_from_packed(e)
         if pal is None:
             sys.exit(f"{a.pck}#{a.entry}: no packed palette at offset 0xB")
+    elif a.exe:
+        path, off = parse_exe_spec(a.exe)
+        try:
+            blob = open(path, 'rb').read()
+        except OSError as e:
+            sys.exit(f"{path}: {e}")
+        if off is None:
+            if _tables is None:
+                sys.exit("tools/pal_tables.py is missing, cannot list tables")
+            found = 0
+            for o, tri in _tables.tables_in(blob):
+                print(f"{os.path.basename(path)} @ {o:#x}  {show(tri)}")
+                found += 1
+            print(f"# {found} palette table(s) in {path}")
+            sys.exit(0)
+        try:
+            pal, order = palette_from_exe_table(blob, off)
+        except ValueError as e:
+            sys.exit(f"{path}: {e}")
+        print(f"# {path} @ {off:#x}, channel order {order}")
+        if order.endswith('(unverified)'):
+            print("# WARNING: this does not look like a palette (first entry is not "
+                  "black or fewer than 10 distinct colours)")
     elif a.shot:
         if not a.vram:
             sys.exit("--shot needs --vram <Vga.bin> from a save state of the same screen")

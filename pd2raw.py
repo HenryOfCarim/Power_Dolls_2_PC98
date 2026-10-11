@@ -9,6 +9,11 @@ This is the same codec as `pd2img.decode_lzss`; only the container differs.
 `S_ROLL.ASK` is a 640x320 frame (decoded_size = 102400) and is NOT corrupt -
 it simply does not use the 12-byte picture header.
 
+The detection itself lives in `pd2img.is_raw_block`, so there is one
+implementation; `pd2extract.py` uses the same helper to render such a block as a
+picture (`--raw-geom WxH` supplies the geometry when the size is not a known
+screen size).
+
 Usage:
     python pd2raw.py --file HUNIT.SLD -o out.bin
     python pd2raw.py --all  ..\\hdi\\PD2D -o out\\unpacked
@@ -16,27 +21,7 @@ Usage:
 import os, sys, struct, argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pd2img import decode_lzss
-
-MIN_SIZE = 16
-MAX_SIZE = 8_000_000
-
-
-def is_raw_block(blob):
-    """True if blob looks like 'u32 decoded_size' + LZSS from offset 4."""
-    if len(blob) < MIN_SIZE:
-        return None
-    n = struct.unpack_from('<I', blob, 0)[0]
-    if not (MIN_SIZE <= n <= MAX_SIZE):
-        return None
-    try:
-        out, used = decode_lzss(blob, 4, n)
-    except Exception:
-        return None
-    # the decisive test: the stream must be consumed to the last byte
-    if len(out) == n and used >= len(blob) - 1:
-        return out
-    return None
+from pd2img import decode_lzss, is_raw_block
 
 
 def main():
