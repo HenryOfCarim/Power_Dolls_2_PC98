@@ -1,0 +1,7 @@
+# generated output
+out/
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
