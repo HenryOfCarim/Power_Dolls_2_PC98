@@ -186,13 +186,33 @@ python pd2raw.py --all  DIR      -o OUTDIR
    кодека;
 3. кожен запис-картинка декодується рівно до `decoded_size` і споживає потік до
    останнього байта (допуск 1 байт на хвіст бітового буфера);
-4. кількості: 348 записів `.PCK` + 12 `.ASK` = 360;
+4. кількості: 348 записів `.PCK` + 12 `.ASK` = 360 (плюс «сирий блок»
+   `S_ROLL.ASK`, який `pd2extract.py` рендерить як кадр 640x320);
 5. 26/26 `.GCP` мають валідну палітру за зсувом `0xB`, з них рівно 2 не
-   дефолтні.
+   дефолтні;
+6. чотири відомі палітри екранів лежать в EXE за задокументованими зсувами
+   (порядок каналів B,R,G);
+7. `S_ROLL.ASK` — «сирий блок», його геометрія виводиться як 640x320.
 
 ```
-python tools\verify.py --data ..\hdi\PD2D --floppy ..
+python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked"
 ```
+
+### `tools/img_extract.py` — розпакування образу диска
+
+```
+python tools\img_extract.py --probe IMAGE [IMAGE ...]
+python tools\img_extract.py IMAGE -o OUTDIR [--base 0x1000]
+python tools\img_extract.py --all IMAGEDIR -o OUTDIR
+```
+
+Власний читач FAT12/FAT16, бо частина дампів не піддається 98Bridge: чистий
+FAT12 з медіабайтом `0xFE` (`MS-DOS.FDI`), FAT12 за 0x1000-байтовою обгорткою
+(FDI `S-Premium` і `Premium Disc`), а також образи, у яких завантажувальний
+сектор не за зсувом 0. `--probe` показує знайдену геометрію, а сам інструмент
+витягує все дерево каталогів. Образам без самодостатнього BPB (набір `.fdd`
+Advanced PD2) розпакування поки не світить — але їх усе одно можна сканувати
+на палітри як непрозорі бінарники.
 
 ### `tools/render_vram.py` — рендер GVRAM зі save-state
 
@@ -227,6 +247,9 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 | [`docs/FORMAT.md`](docs/FORMAT.uk.md) | **глибокий огляд:** усі контейнери, точний алгоритм кодека, стан, біт-рідер, токени, пастки, розкладка виводу, доведення правильності |
 | [`docs/PALETTE.md`](docs/PALETTE.uk.md) | палітра: механізм, 32-байтовий формат, де лежить, де її немає, як дістати |
 | [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) | **виправлення:** палітри екранів **є** у файлах — 48-байтові банки в EXE, порядок каналів B,R,G, і як їх знаходити/витягувати |
+| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.uk.md) | Advanced PD2: розкладка `.fdd` без BPB, контейнер `BIGFILE`, що це патч-надбудова над PD2 |
+| [`docs/PD1.md`](docs/PD1.uk.md) | Power Dolls 1: чому там 6 картинок — графіка лежить у display-list'ах `.GCP` (той самий формат, що `CHARA.PCK` у PD2) |
+| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) | display-list'и: знайдено рутину (10 бінарників, обидві ігри), грамматика потоку, що лишилось |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.uk.md) | порядок завантаження з HDI, карта `EXEC`, таблиця розташування декодера в 15 бінарниках, як резолвити DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.uk.md) | пастки, які збили попередні дослідження (щоб не повторити) |
 

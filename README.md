@@ -178,13 +178,32 @@ and [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md):
    distinctive codec constants are checked instead;
 3. every picture entry decodes to exactly `decoded_size` and consumes the
    stream down to the last byte (1 byte of tolerance for the bit-buffer tail);
-4. counts: 348 `.PCK` entries + 12 `.ASK` = 360;
+4. counts: 348 `.PCK` entries + 12 `.ASK` = 360 (plus the raw-block `S_ROLL.ASK`,
+   which `pd2extract.py` renders as a 640x320 frame);
 5. 26/26 `.GCP` carry a valid palette at offset `0xB`, exactly 2 of them
-   non-default.
+   non-default;
+6. the four known screen palettes live inside the EXEs at the documented offsets
+   (channel order B,R,G);
+7. `S_ROLL.ASK` is a raw block and its geometry derives as 640x320.
 
 ```
-python tools\verify.py --data ..\hdi\PD2D --floppy ..
+python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked"
 ```
+
+### `tools/img_extract.py` — unpack a disk image
+
+```
+python tools\img_extract.py --probe IMAGE [IMAGE ...]
+python tools\img_extract.py IMAGE -o OUTDIR [--base 0x1000]
+python tools\img_extract.py --all IMAGEDIR -o OUTDIR
+```
+
+Its own FAT12/FAT16 reader, because several dumps defeat 98Bridge: plain FAT12
+with media byte `0xFE` (`MS-DOS.FDI`), FAT12 behind a `0x1000`-byte wrapper (the
+`S-Premium` and `Premium Disc` FDIs), and raw images whose boot sector is not at
+offset 0. It reports the layout it found (`--probe`) and extracts the whole
+directory tree. Images without a self-consistent BPB (the Advanced PD2 `.fdd`
+set) are still scannable for palettes as opaque binaries.
 
 ### `tools/render_vram.py` — render GVRAM from a save state
 
@@ -218,6 +237,9 @@ Full breakdown: [`docs/FORMAT.md`](docs/FORMAT.md).
 | [`docs/FORMAT.md`](docs/FORMAT.md) | **deep dive:** all containers, the exact codec algorithm, state, bit reader, tokens, the two pitfalls, output layout, proof of correctness |
 | [`docs/PALETTE.md`](docs/PALETTE.md) | palette: mechanism, 32-byte format, where it is, where it is not, how to obtain it |
 | [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md) | **correction:** the screens' palettes *are* in the files — 48-byte banks inside the EXEs, channel order B,R,G, and how to find/extract them |
+| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.md) | Advanced PD2: the BPB-less `.fdd` layout, the `BIGFILE` container, and why this release is a patch over PD2 |
+| [`docs/PD1.md`](docs/PD1.md) | Power Dolls 1: why only 6 pictures convert — the artwork lives in `.GCP` display lists (the same format as PD2's `CHARA.PCK`) |
+| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) | display lists: the player routine (10 binaries, both games), the stream grammar, what is left |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md) | HDI boot/load chain, `EXEC` map, decoder locations in 15 binaries, how to resolve DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.md) | the traps that derailed earlier investigations (so you do not repeat them) |
 

@@ -181,9 +181,20 @@ def main():
             srcs = [a.pck]
         for src in sorted(srcs):
             stem = os.path.splitext(os.path.basename(src))[0]
+            # in --all mode mirror the input tree: archives with the same name in
+            # different directories (the floppy release has several) would
+            # otherwise overwrite each other's output
+            if a.all:
+                rel = os.path.relpath(os.path.dirname(os.path.abspath(src)),
+                                      os.path.abspath(a.all))
+                sub = '' if rel == os.curdir else rel
+            else:
+                sub = ''
             if src.upper().endswith('.ASK'):
                 print(f"{os.path.basename(src)}")
-                do_ask_file(src, os.path.join(a.outdir, stem + '.png'))
+                out_path = os.path.join(a.outdir, sub, stem + '.png')
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                do_ask_file(src, out_path)
             else:
                 try:
                     ents = parse_archive(src)
@@ -192,7 +203,7 @@ def main():
                     continue
                 imgs = [(i, b) for i, b in ents if is_image_entry(b)]
                 print(f"{os.path.basename(src)}: {len(imgs)}/{len(ents)} image entries")
-                d = os.path.join(a.outdir, stem)
+                d = os.path.join(a.outdir, sub, stem)
                 os.makedirs(d, exist_ok=True)
                 for i, b in imgs:
                     do(b, os.path.join(d, f"{stem}_{i:03d}.png"))
