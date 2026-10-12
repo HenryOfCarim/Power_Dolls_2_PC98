@@ -110,7 +110,15 @@ yields 102262 bytes and then hits the end of the stream — i.e. it is wrong.
 * computes the destination address as `y*0x50 + x/8` (VRAM stride = 80).
 
 A `.GCP` header is 12 bytes, followed by a **32-byte palette at offset `0xB`**
-(see [`PALETTE.md`](PALETTE.md)) and then commands from offset `0x2B`.
+(see [`PALETTE.md`](PALETTE.md)) and then commands from offset `0x2B`. That table
+is also the extractor's fallback palette — and it is **not** the palette the game
+uses for its artwork screens, so a render without `--pal`/`--pal-exe` has wrong
+colours; see the "read first" section of [`PALETTE.md`](PALETTE.md).
+
+A picture does not carry the palette it is displayed with: most `.ASK`/`.PCK` image
+entries hold none at all (`FACE.PCK`: 0 of 38), and the 32-byte table some of them
+do have at offset `0xB` is the default ramp — see §2 of
+[`PALETTE.md`](PALETTE.md) and [`PALETTE_TABLES.md`](PALETTE_TABLES.md).
 
 The same applies to the "display list" entries inside `.PCK` files — they have
 an identical header structure (`struct[8] == 0x22`).
@@ -336,4 +344,7 @@ against GVRAM.
   the game.
 * **Exact palettes of the artwork screens** — solved: the tables ship inside the
   EXEs (48 bytes, channel order B,R,G) — [`PALETTE_TABLES.md`](PALETTE_TABLES.md),
-  `tools/pal_tables.py`, or `pd2extract.py --pal-exe "FILE.EXE:0xOFFSET"`.
+  `tools/pal_tables.py`, or `pd2extract.py --pal-exe "FILE.EXE:0xOFFSET"`. Which
+  table belongs to which screen is mapped for four screens only, and the
+  extractor's default `.GCP` ramp is **not** the game's palette
+  ([`PALETTE.md`](PALETTE.md), "read first").

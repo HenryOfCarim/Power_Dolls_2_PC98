@@ -40,15 +40,19 @@ class Layout:
                 f" data@{self.data_start:#x}")
 
 
-def parse_bpb(d: bytes, base: int) -> Layout | None:
+def parse_bpb(d: bytes, base: int, allow_media_mismatch=False) -> Layout | None:
     if base + 0x18 > len(d):
         return None
     bps, spc, res, nf, root, tot, media, spf = struct.unpack_from("<HBHBHHBH", d, base + 0x0B)
+    # FAT12/16 BPBs can use the 32-bit total-sector field when the 16-bit
+    # field is zero. Keep the reader FAT12/16-only (spf16 must be nonzero).
+    if tot == 0 and base + 0x24 <= len(d):
+        tot = struct.unpack_from("<I", d, base + 0x20)[0]
     if bps not in (512, 1024, 2048, 4096):
         return None
     if spc not in (1, 2, 4, 8, 16, 32, 64, 128):
         return None
-    if not (1 <= res <= 32) or nf not in (1, 2) or not (16 <= root <= 512) or root % 16:
+    if not (1 <= res <= 32) or nf not in (1, 2) or not (16 <= root <= 4096) or root % 16:
         return None
     if not (1 <= spf <= 64) or tot == 0:
         return None
@@ -66,8 +70,14 @@ def parse_bpb(d: bytes, base: int) -> Layout | None:
     if fat_start >= len(d):
         return None
     first_fat_byte = d[fat_start]
-    if media and first_fat_byte != media:          # the FAT starts with the media byte
-        return None
+    if media and first_fat_byte != media:          # normally the FAT starts with the BPB media byte
+        # Some PC-98 DOS 6.2 volumes have a BPB media byte of F8 but a valid
+        # FAT reserved-entry prefix of FE FF FF. Allow this only when the
+        # caller reached the BPB through a declared PC-98 partition record.
+        valid_fat_prefix = (first_fat_byte >= 0xF0 and
+                            d[fat_start + 1:fat_start + 3] == b"\xff\xff")
+        if not allow_media_mismatch or not valid_fat_prefix:
+            return None
     lay = Layout()
     lay.base, lay.bps, lay.spc, lay.res, lay.nf = base, bps, spc, res, nf
     lay.root, lay.tot, lay.media, lay.spf = root, tot, media, spf
@@ -77,17 +87,73 @@ def parse_bpb(d: bytes, base: int) -> Layout | None:
     return lay
 
 
+def pc98_hdi_partitions(d: bytes):
+    """Yield (base, label) for valid PC-98 partitions in an Anex86 HDI.
+
+    Anex86 stores the disk geometry in its 0x1000-byte header. PC-98's IPL
+    sector is followed by sixteen 32-byte partition records; each record's
+    start CHS uses a zero-based sector number on these images.
+    """
+    if len(d) < 0x20 or d[4:6] != b"\x0a\x00":
+        return
+    header_size = struct.unpack_from("<I", d, 8)[0]
+    if not (0x20 <= header_size < len(d)) or d[header_size + 4:header_size + 8] != b"IPL1":
+        return
+    bps, sectors, heads, _cylinders = struct.unpack_from("<IIII", d, 0x10)
+    if bps not in (512, 1024, 2048, 4096) or not (1 <= sectors <= 64) or not (1 <= heads <= 16):
+        return
+    table = header_size + bps
+    if table + 16 * 32 > len(d):
+        return
+    seen = set()
+    for i in range(16):
+        entry = d[table + 32 * i:table + 32 * (i + 1)]
+        if len(entry) < 32 or entry[:2] == b"\x00\x00":
+            continue
+        # PC-98 partition record: start sector, head, and 16-bit cylinder.
+        sector, head, cylinder = entry[8], entry[9], struct.unpack_from("<H", entry, 10)[0]
+        if head >= heads or sector >= sectors:
+            continue
+        lba = cylinder * heads * sectors + head * sectors + sector
+        base = header_size + lba * bps
+        if base in seen or base + 0x40 > len(d):
+            continue
+        seen.add(base)
+        label = entry[16:32].decode("ascii", "replace").rstrip(" \x00")
+        yield base, label or f"partition {i + 1}"
+
+
 def find_layout(d: bytes, bases=BASES, scan_limit=0x20000):
     """-> (Layout, how) or (None, reason)."""
     for base in bases:
         lay = parse_bpb(d, base)
         if lay:
             return lay, f"BPB at {base:#x}"
+    # HDI images can contain a PC-98 partition table before the FAT volume.
+    # Check its declared partition starts before trying broad signature scans.
+    for base, label in pc98_hdi_partitions(d):
+        lay = parse_bpb(d, base, allow_media_mismatch=True)
+        if lay:
+            return lay, f"PC-98 partition {label!r} at {base:#x}"
+    # Preserve the established fallback for images whose boot sector has no
+    # usable BPB (notably some custom Advanced PD2 disk dumps).
     lay, how = find_layout_nobpb(d)
     if lay:
         return lay, how
     # last resort: look for a BPB-like structure anywhere near the start
-    for base in range(0, min(scan_limit, max(0, len(d) - 0x40)), 2):
+    # Include the HDI payload offset as a scan origin while retaining support
+    # for BPBs behind wrappers that are not sector-aligned.
+    origins = {0}
+    if len(d) >= 0x0C:
+        header_size = struct.unpack_from("<I", d, 8)[0]
+        if 0 <= header_size < len(d):
+            origins.add(header_size)
+    candidates = set()
+    for origin in origins:
+        end = min(origin + scan_limit, max(0, len(d) - 0x40))
+        for base in range(origin, end, 2):
+            candidates.add(base)
+    for base in sorted(candidates):
         lay = parse_bpb(d, base)
         if lay:
             return lay, f"BPB found by scan at {base:#x}"

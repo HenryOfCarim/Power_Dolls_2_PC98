@@ -55,6 +55,7 @@ What is NOT a palette source
 Usage
 -----
     python pd2pal.py --list  hdi/PD2D                 # every palette in the game data
+    python pd2pal.py --suggest hdi/PD2D --for FACE.PCK # rank screen-palette candidates
     python pd2pal.py --gcp   hdi/PD2D/HARDY.GCP -o hardy.pal
     python pd2pal.py --pck   hdi/PD2D/CHARA.PCK --entry 3
     python pd2pal.py --exe   hdi/PD2D/TACTICS.EXE      # list the tables in an EXE
@@ -63,12 +64,13 @@ Usage
     python pd2pal.py --shot  capture/game.png --vram dump/Vga.bin -o derived.pal
     python pd2pal.py --default -o pc98default.pal
 """
-import os, sys, struct, argparse, collections
+import os, sys, struct, argparse, collections, re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 for _d in (os.path.join(_HERE, 'tools'), os.path.join(_HERE, 'pd2gfx', 'tools')):
     if os.path.isdir(_d) and _d not in sys.path:
         sys.path.insert(0, _d)
+from pd2img import parse_archive
 try:
     import pal_tables as _tables          # one implementation of the table scan
 except ImportError:                       # pragma: no cover - tools/ ships with it
@@ -81,6 +83,41 @@ EXE_ORDERS = (('B,R,G', (1, 2, 0)), ('R,G,B', (0, 1, 2)), ('G,R,B', (1, 0, 2)),
 DEFAULT_PALETTE = [(0,0,0),(0,0,15),(0,15,0),(0,15,15),(15,0,0),(15,0,15),(15,15,0),(15,15,15),
                    (7,7,7),(0,0,10),(0,10,0),(0,10,10),(10,0,0),(10,0,10),(10,10,0),(10,10,10)]
 """The palette stored in 24 of the 26 .GCP files (offset 0xB)."""
+
+SCREEN_ROLES = {
+    'artwork': 'artwork / portraits / equipment',
+    'gameplay': 'gameplay / tactics',
+    'menu': 'shell / menu',
+    'startup': 'startup',
+}
+
+# These associations have been checked against the game's palette-writer code
+# and/or live screen captures. Other EXE tables are retained as unclassified
+# candidates; frequency alone is only a weak tie-breaker.
+KNOWN_SCREEN_TABLES = {
+    ('BRIEFING.EXE', 0x234C6): 'artwork',
+    ('CONVERT.EXE', 0xF9D0): 'artwork',
+    ('OPENING.EXE', 0xCF0E): 'artwork',
+    ('REPORT.EXE', 0x13E5C): 'artwork',
+    ('REPORT.EXE', 0x169A2): 'artwork',
+    ('TACTICS.EXE', 0x2290E): 'artwork',
+    ('TACTICS.EXE', 0x1ECA4): 'gameplay',
+    ('PD2SHELL.EXE', 0x98E6): 'menu',
+    ('STARTUP.EXE', 0x9311): 'startup',
+}
+SCREEN_CANONICAL_TABLES = {
+    'artwork': ('BRIEFING.EXE', 0x234C6),
+    'gameplay': ('TACTICS.EXE', 0x1ECA4),
+    'menu': ('PD2SHELL.EXE', 0x98E6),
+    'startup': ('STARTUP.EXE', 0x9311),
+}
+
+ASSET_ROLE_TOKENS = {
+    'artwork': {'BRIEFING', 'FACE', 'PORTRAIT', 'EQUIP', 'REPORT', 'OPENING', 'CHARA'},
+    'gameplay': {'TACTICS', 'BATTLE', 'COMBAT', 'GAMEPLAY'},
+    'menu': {'PD2SHELL', 'SHELL', 'MENU'},
+    'startup': {'STARTUP', 'BOOT'},
+}
 
 
 # ---------------------------------------------------------------- packed table
@@ -212,6 +249,178 @@ def show(pal):
     return " ".join(f"{r:x}{g:x}{b:x}" for r, g, b in pal)
 
 
+def list_packed_palettes(root):
+    """Print packed palettes from .GCP files and .PCK entries under root."""
+    if not os.path.isdir(root):
+        sys.exit(f"{root}: not a directory")
+
+    found = 0
+    for current, dirs, files in os.walk(root):
+        dirs.sort(key=str.casefold)
+        for name in sorted(files, key=str.casefold):
+            ext = os.path.splitext(name)[1].upper()
+            if ext not in ('.GCP', '.PCK'):
+                continue
+            path = os.path.join(current, name)
+            label = os.path.relpath(path, root)
+            if ext == '.GCP':
+                try:
+                    with open(path, 'rb') as f:
+                        blob = f.read()
+                    palettes = [(None, palette_from_packed(blob))]
+                except OSError as e:
+                    print(f"! {label}: {e}", file=sys.stderr)
+                    continue
+            else:
+                try:
+                    entries = parse_archive(path)
+                except (OSError, ValueError, struct.error) as e:
+                    print(f"! {label}: {e}", file=sys.stderr)
+                    continue
+                palettes = [(i, palette_from_packed(blob)) for i, blob in entries]
+
+            for index, pal in palettes:
+                if pal is None:
+                    continue
+                entry = f"#{index}" if index is not None else ""
+                print(f"{label}{entry}  {show(pal)}")
+                found += 1
+
+    print(f"# {found} packed palette(s) found in {root}")
+
+
+def suggest_screen_palettes(root, asset=None, limit=12):
+    """Rank screen-palette candidates using known roles and filename hints.
+
+    Pixel data does not identify its original screen palette. The result is a
+    shortlist: filename keywords can suggest a screen type, while known EXE
+    table roles and source frequency provide weaker supporting clues.
+    """
+    if _tables is None:
+        sys.exit("tools/pal_tables.py is missing, cannot scan screen palettes")
+    if not os.path.isdir(root):
+        sys.exit(f"{root}: not a directory (pass an extracted game-data directory)")
+    if limit < 1:
+        sys.exit("--limit must be at least 1")
+
+    executables = sorted(
+        (os.path.join(current, name)
+         for current, _dirs, files in os.walk(root)
+         for name in files if name.upper().endswith('.EXE')),
+        key=str.casefold)
+    rows = _tables.scan(executables)
+    if not executables:
+        print("[pd2pal] no EXE files found; only the PC-98 default fallback is available")
+
+    # Group copies of the same table so duplicate EXEs do not flood the list.
+    grouped = {}
+    for path, offset, pal in rows:
+        key = tuple(tuple(c) for c in pal)
+        item = grouped.setdefault(key, {'sources': [], 'roles': set(), 'default': False})
+        item['sources'].append((path, offset))
+        role = KNOWN_SCREEN_TABLES.get((os.path.basename(path).upper(), offset))
+        if role:
+            item['roles'].add(role)
+
+    default_key = tuple(DEFAULT_PALETTE)
+    default = grouped.setdefault(default_key, {'sources': [], 'roles': set(), 'default': False})
+    default['default'] = True
+
+    hint_role, hint_token = infer_screen_role(asset)
+
+    role_order = {role: i for i, role in enumerate(('artwork', 'gameplay', 'menu', 'startup'))}
+
+    def rank_key(pair):
+        key, item = pair
+        roles = item['roles']
+        if hint_role and hint_role in roles:
+            tier = 0
+        elif roles:
+            tier = 1
+        elif item['default']:
+            tier = 2
+        else:
+            tier = 3
+        priority = min((role_order[r] for r in roles), default=99)
+        return tier, priority, -len(item['sources']), key
+
+    candidates = sorted(grouped.items(), key=rank_key)[:limit]
+    print(f"[pd2pal] heuristic palette candidates from {root}")
+    if asset:
+        print(f"  asset: {asset}")
+    if hint_role:
+        print(f"  filename hint: {SCREEN_ROLES[hint_role]} (keyword {hint_token!r}; heuristic)")
+    else:
+        print("  filename hint: none; showing known screen palettes, then common tables")
+    print("  These are candidates, not a verified palette assignment; palette choice is per screen.")
+
+    for index, (key, item) in enumerate(candidates, 1):
+        roles = sorted(item['roles'], key=lambda r: role_order[r])
+        if hint_role and hint_role in item['roles']:
+            label = f"filename match: {SCREEN_ROLES[hint_role]}"
+        elif roles:
+            label = "known screen: " + ", ".join(SCREEN_ROLES[r] for r in roles)
+        elif item['default']:
+            label = "PC-98 default ramp (fallback)"
+        else:
+            label = f"unclassified EXE table ({len(item['sources'])} source occurrence(s))"
+        print(f"  {index:2d}. {label}")
+        if item['sources']:
+            sources = sorted(item['sources'], key=lambda s: (
+                0 if KNOWN_SCREEN_TABLES.get((os.path.basename(s[0]).upper(), s[1])) in roles else 1,
+                os.path.basename(s[0]).casefold(), s[1]))
+            for path, offset in sources[:3]:
+                print(f'      {path} @ {offset:#x}  (--pal-exe "{path}:{offset:#x}")')
+            if len(sources) > 3:
+                print(f"      +{len(sources) - 3} other source location(s)")
+        print(f"      {show(key)}")
+
+
+def infer_screen_role(asset):
+    """Return (screen role, matched filename keyword), or (None, None)."""
+    if not asset:
+        return None, None
+    asset = str(asset)
+    for text in (os.path.basename(asset), os.path.dirname(asset)):
+        tokens = set(re.findall(r'[A-Z0-9]+', text.upper()))
+        for role in ('artwork', 'gameplay', 'menu', 'startup'):
+            hit = sorted(tokens & ASSET_ROLE_TOKENS[role])
+            if hit:
+                return role, hit[0]
+    return None, None
+
+
+def known_screen_palettes(root):
+    """Return available verified roles as {role: (palette, path, offset)}."""
+    if _tables is None:
+        sys.exit("tools/pal_tables.py is missing, cannot scan screen palettes")
+    if not os.path.isdir(root):
+        sys.exit(f"{root}: not a directory (pass an extracted game-data directory)")
+    executables = sorted(
+        (os.path.join(current, name)
+         for current, _dirs, files in os.walk(root)
+         for name in files if name.upper().endswith('.EXE')),
+        key=str.casefold)
+    matches = {role: [] for role in SCREEN_ROLES}
+    for path, offset, pal in _tables.scan(executables):
+        role = KNOWN_SCREEN_TABLES.get((os.path.basename(path).upper(), offset))
+        if role:
+            matches[role].append((path, offset, pal))
+
+    result = {}
+    for role, sources in matches.items():
+        if not sources:
+            continue
+        preferred = SCREEN_CANONICAL_TABLES[role]
+        path, offset, pal = min(sources, key=lambda item: (
+            0 if (os.path.basename(item[0]).upper(), item[1]) == preferred else 1,
+            os.path.basename(item[0]).casefold(), item[1]))
+        # pd2extract's renderer accepts 8-bit RGB values, while the table
+        # scanner returns the game's 4-bit components.
+        result[role] = ([(r * 17, g * 17, b * 17) for r, g, b in pal], path, offset)
+    return result
+
+
 # --------------------------------------------------------------- screenshot way
 def derive_from_shot(shot, vram, sx, sy, ox, oy, base=0x07C000, gap=0x10000):
     """Read the palette out of a rendered screenshot using the emulator's GVRAM.
@@ -263,8 +472,14 @@ def main():
     g.add_argument('--exe', metavar='FILE.EXE[:0xOFFSET]',
                    help='48-byte palette table inside an EXE: bare path lists the '
                         'tables, FILE:0xOFFSET dumps one')
+    g.add_argument('--suggest', metavar='DIR',
+                   help='rank screen-palette candidates found in an extracted game-data directory')
     g.add_argument('--default', action='store_true')
     ap.add_argument('--entry', type=int, default=None)
+    ap.add_argument('--for', dest='asset', metavar='ASSET',
+                    help='asset name/path used only as a filename hint with --suggest')
+    ap.add_argument('--limit', type=int, default=None,
+                    help='maximum candidates printed by --suggest (default: 12)')
     ap.add_argument('--vram', metavar='Vga.bin')
     ap.add_argument('--sx', type=float, default=1.0)
     ap.add_argument('--sy', type=float, default=1.0)
@@ -273,6 +488,19 @@ def main():
     ap.add_argument('-o', '--out')
     ap.add_argument('--fmt', default='jasc', choices=['jasc', 'raw', 'nibbles'])
     a = ap.parse_args()
+
+    if a.asset and not a.suggest:
+        ap.error('--for can only be used with --suggest')
+    if a.limit is not None and not a.suggest:
+        ap.error('--limit can only be used with --suggest')
+
+    if a.list:
+        list_packed_palettes(a.list)
+        return
+
+    if a.suggest:
+        suggest_screen_palettes(a.suggest, a.asset, a.limit or 12)
+        return
 
     pal = None
     if a.default:

@@ -194,3 +194,32 @@ worth nothing.
 
 An emulator capture is now needed only to learn **which** table a given screen
 uses: `tools/pal_tables.py --find capture\game_analog.rgb`.
+
+---
+
+## 12. "The colours are wrong, so the decoder is wrong"
+
+The most common false alarm once the codec works, and the one that costs the most
+time because it looks exactly like a bit-plane bug.
+
+`pd2extract.py` renders with the **PC-98 default palette** unless you pass `--pal`
+or `--pal-exe` — the ramp packed into 24 of the 26 `.GCP` files. That ramp is real,
+but it is **not the palette the game uses for its artwork**, so a plain `--all`
+run writes PNGs in primary green/blue/red.
+
+It is not the codec:
+
+* the **geometry** of such a render is exact — the palette cannot change it;
+  `tools\verify.py` passes on all 360 pictures either way;
+* the same picture rendered with the screen's own table out of the EXE
+  (`--pal-exe BRIEFING.EXE:0x234C6` for `FACE.PCK`) has natural skin and hair
+  tones — see the "read first" section of [`PALETTE.md`](PALETTE.md);
+* the default shares only **2 of 16** colours (black and white) with any of the
+  four screen palettes that were confirmed against live dumps.
+
+**How not to repeat it:** before suspecting the codec, re-render one picture with
+`--pal-exe BRIEFING.EXE:0x234C6` (equip/artwork) or `TACTICS.EXE:0x1ECA4`
+(gameplay). If the shapes were right and the colours now make sense, the decode was
+always fine — the palette was the only problem. The converse caveat matters just as
+much: a plausible palette is **not** evidence of a correct decode, because the
+geometry does not depend on it — check geometry separately with `tools\verify.py`.

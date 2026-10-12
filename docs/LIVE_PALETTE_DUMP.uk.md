@@ -3,6 +3,18 @@
 Оновлено після підключення **98Bridge** (читання/запис HDI) і прямих прогонів
 емулятора. Усе нижче або **перевірено**, або явно позначено як **неперевірене**.
 
+> **Стан на 2026-10-12: напрямок «дампер палітри всередині гостя» закрито.**
+> Палітри екранів знайшлися в самих EXE (`tools/pal_tables.py`,
+> [`PALETTE_TABLES.md`](PALETTE_TABLES.uk.md)), а для живого екрана досить
+> `Ctrl+F5` (`.pal`) або MCP. Тому 11 інструментів цього напрямку перенесено в
+> [`../_attic-tools/`](../_attic-tools/MANIFEST.md) — разом із поясненням, чим
+> кожен замінено. Нижче збережено як **історію дослідження**; шляхи до
+> перенесених файлів мають префікс `_attic-tools/`.
+>
+> Чого це не скасовує: `Ctrl+F5`+`.pal`, MCP-поллер (`mcp_poll_palette.py`) і
+> `pal_from_shot.py` — чинні шляхи, і саме вони кажуть, **яку** таблицю бере
+> конкретний екран (див. [`PALETTE.md`](PALETTE.uk.md) → «Читати першим»).
+
 ---
 
 ## 1. Що працює (і як цим користуватися)
@@ -39,6 +51,12 @@ python tools\dosbox_mcp_palette.py --listen 2999 --save out\pal\game.pal `
 `EXEC MEMDUMPBIN A000:0000 4000 vram.bin` -> дамп текстової VRAM у файл на
 хості (так я прочитав екран завантаження гостя).
 
+> **Навіщо це все.** Живий знімок дає палітру **того екрана, який знято**. Самі
+> картинки палітри не несуть, а дефолтна шкала `pd2extract.py` — не палітра гри,
+> тож без `--pal`/`--pal-exe` PNG виходять із неправильними кольорами. Див.
+> [`PALETTE.md`](PALETTE.uk.md) → «Читати першим»: там таблиця «екран → таблиця в
+> EXE» для чотирьох уже зіставлених екранів і рецепт для решти.
+
 ### B. Палітра зі скріншота (резервний шлях, без конфігів)
 
 ```powershell
@@ -54,16 +72,18 @@ python tools\pal_from_shot.py capture\game.raw1.png -o out\game.pal --fmt all
 | `tools/dosbox_mcp_palette.py` | **працює**: запускає DOSBox-X, питає палітру, пише `.pal` + прев'ю |
 | `tools/mcp_probe.py` | **працює**: те саме проти вже запущеної гри |
 | `tools/mcp_probe.conf` | **працює**: мінімальний конфіг із `mcp_server = 2999` |
+| `tools/mcp_poll_palette.py` | **працює**: поллер живої палітри; ним зроблено `out/pal/equip/*` |
+| `tools/mcp_dump_vram.py` | **працює**: площини GVRAM живої гри; ним зроблено `out/vram/pd1/*` |
 | `tools/pal_from_shot.py` | **працює** (4-бітні значення з індексованого PNG) |
-| `tools/pd2asm.py` | **працює**: міні-асемблер без NASM/TASM |
-| `tools/paldump.asm` → `tools/PALDUMP.COM` | **збирається, 283 байти**; у грі ще не виконувався (див. §4) |
-| `tools/hdi98.py` | **працює**: 98Bridge читає `PD2S.HDI` як FAT12 (320C/4H/17S, 1024 B/сектор, кластер 4096 B) |
-| `tools/fat16.py` | не потрібен: власний FAT-парсер виявився зайвим, є 98Bridge |
-| `tools/inject_paldump.py` | **працює**: кладе файл на образ, робить бекап `AUTOEXEC.ORI`, `verify` звіряє цілісність |
-| `tools/cmp_rootdir.py` | **працює**: по-записовий diff кореневої теки двох образів |
-| `tools/run_inject_probe.conf` | **працює**: завантажує модифікований образ |
-| `tools/run_palette_probe.conf` | **не використовувати**: `convertdrivefat` + `BOOT` дає «Please reboot a machine» |
-| `tools/writeback_probe.conf` | **працює**: доводить, що гість пише в образ, а хост це бачить |
+| ~~`tools/pd2asm.py`~~ | перенесено в `_attic-tools/`: існував лише для `paldump.asm` |
+| ~~`tools/paldump.asm` → `tools/PALDUMP.COM`~~ | перенесено в `_attic-tools/`: **збирається, 283 байти**, але у грі так і не виконався (див. §4) |
+| ~~`tools/hdi98.py`~~ | перенесено в `_attic-tools/`: працював (98Bridge читає `PD2S.HDI` як FAT12 — 320C/4H/17S, 1024 B/сектор, кластер 4096 B), але поза цим кластером не потрібен |
+| ~~`tools/fat16.py`~~ | перенесено в `_attic-tools/`: не потрібен, власний FAT-парсер виявився зайвим, є 98Bridge |
+| ~~`tools/inject_paldump.py`~~ | перенесено в `_attic-tools/`: працював (кладе файл на образ, бекап `AUTOEXEC.ORI`, `verify`) |
+| ~~`tools/cmp_rootdir.py`~~ | перенесено в `_attic-tools/`: працював (по-записовий diff кореневої теки) |
+| ~~`tools/run_inject_probe.conf`~~ | перенесено в `_attic-tools/` |
+| ~~`tools/run_palette_probe.conf`~~ | перенесено в `_attic-tools/`: **не використовувати** (`convertdrivefat` + `BOOT` дає «Please reboot a machine») |
+| ~~`tools/writeback_probe.conf`~~ | перенесено в `_attic-tools/`: довів, що гість пише в образ |
 
 ---
 
@@ -76,17 +96,17 @@ python tools\pal_from_shot.py capture\game.raw1.png -o out\game.pal --fmt all
    незаписані зміни губляться.
 2. **98Bridge читає/пише цей HDI.** `AUTOEXEC.BAT`, витягнутий через 98Bridge,
    побайтово збігається з раніше розпакованою копією (SHA-256 збіг).
-3. **Інжектор не псує образ.** `inject_paldump.py verify`: серіалізатор FAT
+3. **Інжектор не псує образ.** `_attic-tools/inject_paldump.py verify`: серіалізатор FAT
    відтворює незмінений FAT **побайтово**, і всі файли читаються рівно за
-   заявленим розміром. `cmp_rootdir.py` показує рівно 3 змінені записи
+   заявленим розміром. `_attic-tools/cmp_rootdir.py` показує рівно 3 змінені записи
    (доданий `PD2PAL.COM`, `AUTOEXEC.ORI`, новий `AUTOEXEC.BAT`) — і нічого
    більше.
 
 > Виявлений і виправлений баг: `fat_fs.py` з 98Bridge у гілці FAT12 знищує
 > таблицю (`word = (word & 0xF000) | val` для парних кластерів затирає молодший
 > нібл сусіднього запису — 2550 з 4096 байтів змінювались). Тому
-> `inject_paldump.py` серіалізує FAT **своїм** кодом (`fat_serialize`), а
-> `verify` перевіряє round-trip перед будь-яким записом.
+> `_attic-tools/inject_paldump.py` серіалізує FAT **своїм** кодом
+> (`fat_serialize`), а `verify` перевіряє round-trip перед будь-яким записом.
 
 ---
 
@@ -118,12 +138,18 @@ python tools\pal_from_shot.py capture\game.raw1.png -o out\game.pal --fmt all
 
 ## 5. Практичний висновок
 
-* Треба **палітру екрана гри зараз** -> `PC98 DACPAL` через MCP (§1A). Це
-  працює і дає всі 16 записів DAC, разом із тими, яких немає на екрані.
-* Треба **справжня, незмінна** палітра -> дампер у гості (§4) або `.pal` зі
-  скріншота (§1B).
-* Треба **гра з правильною палітрою** -> `pd2extract.py --pal out\game.pal`.
+* Треба **палітру екрана гри зараз** -> `PC98 DACPAL` через MCP (§1A) або
+  `Ctrl+F5` (`.png` + `.pal`). Працює і дає всі 16 записів DAC.
+* Треба **дізнатися, яку таблицю бере екран** -> знімок + `tools/pal_tables.py
+  --find`, або MCP-поллер `tools/mcp_poll_palette.py` (ним зроблено
+  `out/pal/equip/*`).
+* Треба **гра з правильною палітрою** -> `pd2extract.py --pal-exe FILE.EXE:0xOFFSET`
+  (таблиця на екран — у [`PALETTE.md`](PALETTE.uk.md) → «Читати першим»), або
+  `--pal out\game.pal` зі знятої палітри.
+* Дампер усередині гостя (§4) для цього **не потрібен** — напрямок закрито, файли
+  в [`../_attic-tools/`](../_attic-tools/MANIFEST.md).
 
 **Залізне правило:** усі досліди — тільки на копії (`_hdi_test\*`), оригінал у
-`D:\Games\DOSBox-X\PD2S.HDI` не чіпати. `inject_paldump.py restore` повертає
-`AUTOEXEC.BAT` з `AUTOEXEC.ORI` і прибирає `PD2PAL.COM`/`PD2PAL.DAT`.
+`D:\Games\DOSBox-X\PD2S.HDI` не чіпати. Для експериментів з образом повертаються
+`_attic-tools\inject_paldump.py` (його `restore` відновлює `AUTOEXEC.BAT` з
+`AUTOEXEC.ORI` і прибирає `PD2PAL.COM`/`PD2PAL.DAT`) та `cmp_rootdir.py`.

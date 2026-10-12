@@ -46,6 +46,10 @@ PD2: the code picks a table and hands it to the palette writer. So "many palette
 little raster" is the expected picture — the palettes exist, the pictures are
 drawn by display lists.
 
+Consequence for any render: the pictures carry no palette, so the extractor falls
+back to the `.GCP` default ramp and the colours are wrong even though the geometry
+is right — see the "read first" section of [`PALETTE.md`](PALETTE.md).
+
 ## 4. What this means for PD2
 
 The same blocker applies to PD2: the extractor still reports `CHARA.PCK`,

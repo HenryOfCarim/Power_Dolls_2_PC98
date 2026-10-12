@@ -11,8 +11,8 @@ Two modes:
   * indexed screenshot (P mode, e.g. `*.raw1.png`): entry N == DAC index N.
     This is the good case - index -> RGB comes straight out of the file.
   * true-colour screenshot (RGB mode, scaled window grab): the colours are
-    there but only as a set; use tools/shot_palette.py with --vram, or reduce
-    the window scaler to 1x first.
+    there but only as a set; use `pd2pal.py --shot <shot.png> --vram <Vga.bin>`
+    (save state of the same screen), or reduce the window scaler to 1x first.
 
 Usage
 -----
@@ -102,7 +102,7 @@ def main() -> int:
         if im.mode != "P":
             print("  NOT an indexed image: the file has no index -> RGB table.")
             print("  Set the window scaler to 1x / take the grab from the "
-                  "unscaled path, or use tools/shot_palette.py --vram.")
+                  "unscaled path, or use `pd2pal.py --shot ... --vram Vga.bin`.")
             continue
         raw = im.getpalette() or []
         if len(raw) < 48:

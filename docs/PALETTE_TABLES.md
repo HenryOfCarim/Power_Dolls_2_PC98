@@ -2,6 +2,11 @@
 
 > This file supplements [`PALETTE.md`](PALETTE.md); parts of its conclusions are
 > **corrected** below.
+>
+> **Just want the in-game colours?** The "read first" section of
+> [`PALETTE.md`](PALETTE.md) is the short version: the extractor's default palette
+> is **not** the game's, and `--pal-exe FILE.EXE:0xOFFSET` is the fix. This file
+> explains where those tables come from.
 
 # Where the screens' palettes really are: the tables inside the EXEs
 
@@ -83,12 +88,24 @@ python pd2extract.py --pck "..\power dolls 2 HDI\_unpacked\PD2D\FACE.PCK" `
 ```
 
 The `FACE_000…` portraits come out with natural skin and hair tones (see
-`out/equip_face/FACE/FACE_000.png`), and `GAMEOVER.ASK` shows its own colours.
+`out/equip_face/FACE/FACE_000.png`); the same pixels through the extractor's
+default ramp are a green-and-blue mess. Three palettes side by side:
+[`PALETTE.md`](PALETTE.md) → "read first" (`img/palette_default_vs_screen.png`).
+
+The palette is chosen **per screen**, not per archive: `BRIEFING.EXE 0x234C6` is
+the equip/artwork screen's table (confirmed by a live capture, `equip_008`), and
+`TACTICS.EXE 0x1ECA4` is gameplay. `GAMEOVER.ASK` renders with any of them and
+none has been confirmed by a capture of that screen — treat it as unmapped until
+one is (see §6).
 
 ## 6. Still open
 
 * systematically map **all** 59 distinct tables (127 positions) to screens —
-  needs a dump per screen or a trace of the callers of the `0x10A59` routine;
+  needs a dump per screen or a trace of the callers of the `0x10A59` routine.
+  **Until that is done, four screens have a known palette** (the table in §4) and
+  everything else needs a capture: `pd2extract.py --pal capture\game.pal`, or
+  `tools/pal_tables.py --find capture\game_analog.rgb` to identify the shipped
+  table and then `--pal-exe`. See also [`PALETTE.md`](PALETTE.md), "read first";
 * `equip_001` — the one screen of the run whose palette is not in the files
   (a bootleg logo, so not a game screen);
 * the 32-byte packed palettes in `.GCP` — separate, see [`PALETTE.md`](PALETTE.md) §2.

@@ -21,12 +21,16 @@ graphics hardware (handler at CONVERT.EXE image 0x5CE2 writes I/O ports 0x7C/0x7
 A screen palette is a 48-byte table inside the game's EXEs, stored with the
 channels in (B, R, G) order - see docs/PALETTE_TABLES.md and `pd2pal.py --exe`.
 """
-import os, sys, struct, argparse
+import os
+import sys
+import struct
+import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pd2img import (parse_entry, parse_archive, is_image_entry, is_raw_block,
                     raw_geometry, planes_from_stream, indices_from_planes)
-from pd2pal import parse_exe_spec, palette_from_exe_table
+from pd2pal import (parse_exe_spec, palette_from_exe_table,
+                    infer_screen_role, known_screen_palettes)
 
 # The PC-98 default 16-colour palette, exactly as the game writes it.
 # Taken from the 32-byte packed table at offset 0xB of 24 of the 26 .GCP files,
@@ -47,7 +51,6 @@ def load_palette_file(path):
     from pd2pal import read_pal
     pal = read_pal(path)
     return [(r * 17, g * 17, b * 17) for r, g, b in pal]
-
 
 
 def save_png(w, h, indices, path, palette, scale=1):
@@ -78,7 +81,9 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--all'); g.add_argument('--pck'); g.add_argument('--ask')
     ap.add_argument('outdir')
-    ap.add_argument('--palette', default='pc98', choices=['pc98', 'gray', 'vivid'])
+    ap.add_argument('--palette', default='pc98', choices=['pc98', 'gray', 'vivid', 'auto'])
+    ap.add_argument('--palette-dir', metavar='DIR',
+                    help='directory with game EXEs for --palette auto; defaults to input directory')
     ap.add_argument('--pal', metavar='FILE.pal',
                     help='use a palette file (JASC-PAL / raw 768 / 48-byte / 16x"R G B" text)')
     ap.add_argument('--pal-exe', metavar='FILE.EXE:0xOFFSET',
@@ -90,6 +95,10 @@ def main():
                     help='geometry for a raw-block .ASK; default derives it from '
                          'decoded_size (640x320 for S_ROLL.ASK)')
     a = ap.parse_args()
+    if a.palette == 'auto' and (a.pal or a.pal_exe):
+        ap.error('--palette auto cannot be combined with --pal or --pal-exe')
+    if a.palette != 'auto' and a.palette_dir:
+        ap.error('--palette-dir can only be used with --palette auto')
     raw_geom = None
     if a.raw_geom:
         try:
@@ -119,22 +128,54 @@ def main():
             print("note: --pal-exe wins over --pal")
     elif a.pal:
         pal = load_palette_file(a.pal)
+    elif a.palette == 'auto':
+        pal = PC98
     else:
         pal = {'pc98': PC98, 'gray': GRAY, 'vivid': VIVID}[a.palette]
+
+    auto_palettes = {}
+    if a.palette == 'auto':
+        if a.palette_dir:
+            palette_root = a.palette_dir
+        elif a.all:
+            palette_root = a.all
+        else:
+            source = a.pck or a.ask
+            palette_root = os.path.dirname(os.path.abspath(source))
+        auto_palettes = known_screen_palettes(palette_root)
+        if auto_palettes:
+            print(f"palette auto: found {len(auto_palettes)} known screen role(s) under {palette_root}")
+        else:
+            print(f"palette auto: no known screen tables under {palette_root}; using PC-98 default when no filename hint matches")
     os.makedirs(a.outdir, exist_ok=True)
     n = 0
 
-    def do(blob, name):
+    def palette_for(asset):
+        if a.palette != 'auto':
+            return pal
+        role, keyword = infer_screen_role(asset)
+        if not role:
+            print(f"  palette auto: no filename hint for {os.path.basename(asset)}; using PC-98 default")
+            return PC98
+        candidate = auto_palettes.get(role)
+        if candidate is None:
+            print(f"  palette auto: hint {keyword!r} suggests {role}, but no matching EXE table was found; using PC-98 default")
+            return PC98
+        chosen, source, offset = candidate
+        print(f"  palette auto: hint {keyword!r} suggests {role}; using {os.path.basename(source)} @ {offset:#x}")
+        return chosen
+
+    def do(blob, name, palette):
         nonlocal n
         try:
-            r, size = one(blob, name, pal, a.scale)
+            r, size = one(blob, name, palette, a.scale)
             n += 1
             return True
         except Exception as e:
             print(f"  ! {name}: {e}")
             return False
 
-    def do_ask_file(src, out_path):
+    def do_ask_file(src, out_path, palette):
         """A standalone .ASK: normal 12-byte entry, or a "raw block" (S_ROLL.ASK).
 
         A raw block carries `u32 decoded_size` + LZSS from offset 4 and no
@@ -143,7 +184,7 @@ def main():
         nonlocal n
         blob = open(src, 'rb').read()
         if is_image_entry(blob):
-            return do(blob, out_path)
+            return do(blob, out_path, palette)
         raw = is_raw_block(blob)
         if raw is None:
             sz, x, y, w, h = struct.unpack_from('<IHHHH', blob, 0)
@@ -159,7 +200,7 @@ def main():
         w, h = geom
         try:
             idx = indices_from_planes(planes_from_stream(raw, w, h), w, h)
-            save_png(w, h, idx, out_path, pal, a.scale)
+            save_png(w, h, idx, out_path, palette, a.scale)
             n += 1
             print(f"{os.path.basename(src)}: raw block -> {w}x{h}")
             return True
@@ -169,7 +210,7 @@ def main():
 
     if a.ask:
         base = os.path.splitext(os.path.basename(a.ask))[0]
-        do_ask_file(a.ask, os.path.join(a.outdir, base + '.png'))
+        do_ask_file(a.ask, os.path.join(a.outdir, base + '.png'), palette_for(a.ask))
     else:
         if a.all:
             srcs = []
@@ -180,6 +221,7 @@ def main():
         else:
             srcs = [a.pck]
         for src in sorted(srcs):
+            src_palette = palette_for(src)
             stem = os.path.splitext(os.path.basename(src))[0]
             # in --all mode mirror the input tree: archives with the same name in
             # different directories (the floppy release has several) would
@@ -194,7 +236,7 @@ def main():
                 print(f"{os.path.basename(src)}")
                 out_path = os.path.join(a.outdir, sub, stem + '.png')
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                do_ask_file(src, out_path)
+                do_ask_file(src, out_path, src_palette)
             else:
                 try:
                     ents = parse_archive(src)
@@ -206,7 +248,7 @@ def main():
                 d = os.path.join(a.outdir, sub, stem)
                 os.makedirs(d, exist_ok=True)
                 for i, b in imgs:
-                    do(b, os.path.join(d, f"{stem}_{i:03d}.png"))
+                    do(b, os.path.join(d, f"{stem}_{i:03d}.png"), src_palette)
     print(f"\n{n} image(s) written to {a.outdir}")
 
 

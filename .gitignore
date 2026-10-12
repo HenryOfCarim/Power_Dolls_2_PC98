@@ -1,5 +1,9 @@
 # generated output
 out/
+_attic-tools/
+_test_games/
+_test_out/
+_hdi_out/
 
 # python
 __pycache__/
