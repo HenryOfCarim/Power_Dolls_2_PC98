@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 from pd2img import (decode_lzss, parse_archive, is_image_entry, is_raw_block,
                     raw_geometry)
 from pd2pal import (palette_from_packed, palette_from_exe_table, DEFAULT_PALETTE)
+from pd2gcp import (DisplayListError, decode as decode_displaylist, is_display_list,
+                    parse_header)
 
 # ---------------------------------------------------------------- expectations
 # decoder entry point in the load image.  Two prologue forms exist:
@@ -71,6 +73,18 @@ EXPECT_EXE_PALETTES = [
     ("TACTICS.EXE",  0x01ECA4, "000 555 999 ddd f65 77f 04b fff fc8 ea6 a74 150 284 3a4 751 fdb"),
 ]
 EXPECT_TABLES_IN_DATA = 44       # palette tables in the HDI PD2D directory
+
+# Display lists (GDC / GRCG command streams): every .GCP in the HDI data dir and
+# 27 of the 38 CHARA.PCK entries.  The decisive check is that the player stops on
+# the closing 0x7F exactly when the block runs out of bytes - the same
+# "consumed to the last byte" argument that validates the raster codec.
+EXPECT_DISPLAYLIST_PCK = 27
+EXPECT_DISPLAYLIST_GEOMETRY = [
+    ("KOGADO.GCP", 24, 56),      # .GCP with a custom artwork palette
+    ("K_BLANC1.GCP", 48, 112),   # no fill, no XOR pass (flags 0x40)
+    ("PD2TITLE.GCP", 80, 400),   # title screen, two XOR passes (flags 0x60)
+    ("USAGI.GCP", 10, 80),
+]
 
 fails, notes = [], []
 
@@ -283,6 +297,65 @@ def verify_raw_block(data_root):
     check(geom == (640, 320), f"its geometry derives as {geom}")
 
 
+def verify_display_lists(data_root):
+    print("\n[8] display lists: .GCP / CHARA.PCK run to their closing 0x7F")
+    problems = []
+    gcp = [f for f in sorted(os.listdir(data_root)) if f.upper().endswith('.GCP')]
+    dl_gcp = 0
+    for f in gcp:
+        blob = open(os.path.join(data_root, f), 'rb').read()
+        if not is_display_list(blob):
+            continue
+        dl_gcp += 1
+        try:
+            res = decode_displaylist(blob)
+        except DisplayListError as e:
+            problems.append(f"{f}: {e}")
+            continue
+        if res['consumed'] != res['stream']:
+            problems.append(f"{f}: consumed {res['consumed']}/{res['stream']} bytes")
+    check(dl_gcp == len(gcp) and bool(gcp),
+          f"{dl_gcp}/{len(gcp)} .GCP files in the data dir are display lists")
+
+    p = os.path.join(data_root, 'CHARA.PCK')
+    dl_pck = 0
+    if os.path.isfile(p):
+        for i, blob in parse_archive(p):
+            if not is_display_list(blob):
+                continue
+            dl_pck += 1
+            try:
+                res = decode_displaylist(blob)
+            except DisplayListError as e:
+                problems.append(f"CHARA.PCK#{i}: {e}")
+                continue
+            if res['consumed'] != res['stream']:
+                problems.append(f"CHARA.PCK#{i}: consumed "
+                                f"{res['consumed']}/{res['stream']} bytes")
+        check(dl_pck == EXPECT_DISPLAYLIST_PCK,
+              f"{dl_pck} display lists in CHARA.PCK (expected {EXPECT_DISPLAYLIST_PCK})")
+    else:
+        notes.append("CHARA.PCK not present - its display-list count is unchecked")
+    check(not problems,
+          "every display list consumed its stream exactly"
+          if not problems else f"{len(problems)} problem(s): {problems[:5]}")
+
+    print("\n[9] display-list geometry: width/height come from the block header")
+    for fn, w, h in EXPECT_DISPLAYLIST_GEOMETRY:
+        p = os.path.join(data_root, fn)
+        if not os.path.isfile(p):
+            notes.append(f"{fn} not present - geometry check skipped")
+            continue
+        try:
+            got = parse_header(open(p, 'rb').read())
+        except DisplayListError as e:
+            check(False, f"{fn}: {e}")
+            continue
+        check((got['width'], got['height']) == (w, h),
+              f"{fn}: {got['height']} rows x {got['width']} bytes "
+              f"(expected {h} x {w})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default=os.path.join('..', 'hdi', 'PD2D'),
@@ -303,6 +376,7 @@ def main():
     verify_palettes(data_root)
     verify_exe_palettes(data_root)
     verify_raw_block(data_root)
+    verify_display_lists(data_root)
 
     print()
     for n in notes:

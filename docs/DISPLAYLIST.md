@@ -1,185 +1,257 @@
 > 🌐 **English** · [Українська](DISPLAYLIST.uk.md)
 
-# `.GCP` / `CHARA.PCK` display lists — reverse-engineering status
+# `.GCP` / `CHARA.PCK` display lists — solved
 
-## 1. The player is found, and it is shared by both games
+The display lists are **decoded**. Every shipped block runs to its last byte and
+renders as a picture; `pd2gcp.py` is the extractor.
 
-The display-list player is **`CONVERT.EXE` image `0x5FCD`** (prologue `enter 8,0`).
-Its body is byte-identical in **10 of 15** binaries checked, across both games:
-
-| binary | routine start |
+| | |
 |---|---|
-| PD2 `CONVERT.EXE` | `0x5FCD` |
-| PD2 `STARTUP.EXE` | `0x608F` |
-| PD2 `TACTICS.EXE` | `0xC33F` |
-| PD2 `BRIEFING.EXE` | `0x10AA1` |
-| PD2 `OPENING.EXE` | `0x5D90` |
-| PD2 `REPORT.EXE` | `0x802B` |
-| PD2 `CHOICE.EXE` | `0x670C` |
-| PD2 `PD2SHELL.EXE` | `0x5AF0` |
-| **PD1 `PREMIUM.EXE`** | `0x63E8` |
-| **PD1 `STARTUP.EXE`** | `0x5230` |
-
-(`MAKEINIT.EXE`, `GO.EXE` are different builds and do not contain it.)
-
-Disassembly listings: `_dec/gcp_player_convert.asm`, `_dec/gcp_player_premium.asm`
-(`python _dec\dis_gcp.py FILE.EXE 0x5FCD 0x6213 --follow 600`).
-
-## 2. Block structure
+| `.GCP` (PD1: 24 files, PD2: 26 files) | ✅ rendered as PNG |
+| `CHARA.PCK` (27 of 38 entries) | ✅ rendered as PNG |
+| Stream grammar | ✅ recovered, byte-exact (`used == len(stream)` on all 77 blocks) |
+| Palettes | ✅ 32-byte packed table at `+0xB`; PD1's `.GCP` carry none (they use EXE tables) |
+| `CHARA.PCK` entries 27..37 | data, not display lists — they are still unconverted |
+| The Huffman branch of the byte reader | code present, **dead for this data** (see §7) |
 
 ```
-+0..3    type:  60 14 f0 00 | 50 14 f0 00 | 60 50 90 01 | 40 50 90 01
-+4..7    00 00 00 00
-+8       payload offset: 0x22 in PD2's CHARA (data from +0x2B, i.e. right after the
-         32-byte palette at +0xB), 0x00 in PD1's .GCP (data from +9)
-+9..     the stream
+python pd2gcp.py --gcp hdi/PD2D/KOGADO.GCP out
+python pd2gcp.py --pck hdi/PD2D/CHARA.PCK out --entry 0
+python pd2gcp.py --all hdi/PD2D out
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
 ```
-The player sets its read pointer to `block + (block[8] + 9)`; byte `block[0]`
-(e.g. `0x60`) is only the "read straight from memory" flag (bit `0x40`).
 
-All 24 of PD1's `.GCP` and 27 of the 38 `CHARA.PCK` entries **end with byte
-`0x7F`** — the end of the stream.
+![Power Dolls 2 title screen, rendered from PD2TITLE.GCP](img/gcp_pd2title.png)
 
-## 3. Arguments
+## 1. What a block is
 
-Called from `0x5EE5` with `(far pointer to the block, VRAM plane offset, a header
-byte)`. The plane offset is the pen's "home" that `0x7F` resets to; the header byte
-is passed to the helper as the number of bytes per 8-pixel group.
+```
++0      flags
+          bit 0x40  the stream is stored verbatim
+          bit 0x80  GRCG read-modify-write (XOR) tile mode
+          bits 0x30 0 = plain draw; else the row fill runs and the row-XOR
+                    decode pass is applied (flags & 0x30) >> 4 times
+          bits 0x0F GRCG plane mask: a SET bit means the plane is NOT written,
+                    so the stream carries tile bytes only for the planes whose
+                    bit is clear
++1      width  in bytes - the row extent of the fill and of the XOR pass
++2..3   height in rows (16-bit little endian)
++4..7   the GRCG seed tile: one byte per written plane, in B,R,G,E order
++8      payload offset counted from +9; >= 0x22 means "the 32-byte palette is
+        at +0xB and the stream starts after it"
++9..10  a 16-bit VRAM offset; the loader uses it instead of the caller's pen
+        when the caller passes a pen >= 0x7D00
++0xB..  the 16-colour packed palette when +8 >= 0x22:
+        byte[2i] = (index << 4) | R,  byte[2i+1] = (G << 4) | B
+stream  block + 9 + block[8]
+```
 
-## 4. Stream grammar (from the code)
+`width x 8` is the picture width in pixels and `height` its height: `CHARA.PCK`
+entries are `20 x 240` = **160x240 portraits**, `KOGADO.GCP` is `24 x 56`,
+`PD2TITLE.GCP` is `80 x 400` = a full screen. No guessing, no alignment search -
+the geometry is in the header.
 
-| byte | action |
+## 2. The loader — `CONVERT.EXE` image `0x5DE5`
+
+```c
+void gcp_load(struct block *b, unsigned pen, int load_palette) {
+    unsigned mask  = ~b->flags & 0x0F;       /* planes that ARE written */
+    unsigned value = b->flags;               /* header byte, see below  */
+    unsigned width = b->width, height = b->height;
+
+    if (b->payload >= 2 && pen >= 0x7D00)    /* the block overrides the pen */
+        pen = b->vram_offset;
+
+    out(0x7C, (b->flags & 0x0F) | 0x80);     /* GRCG on, plane mask        */
+    for (i = 0; i < 4; i++)                  /* seed the GRCG tile         */
+        out(0x7E, (mask & (1 << i)) ? b->tile[read++] : 0);
+
+    if (b->flags & 0x30)                     /* clear/fill every row       */
+        for (r = 0; r < height; r++)
+            fill(0xA800, pen + r * 0x50, b->width, 0);   /* writes the tile */
+
+    player(b, pen, popcount(mask));          /* §4: the command stream     */
+
+    n = (b->flags & 0x30) >> 4;              /* §5: the row-XOR decode     */
+    while (n--)
+        for (r = 0; r < height - 1; r++)
+            for (p = 0; p < 4; p++)
+                if (mask & (1 << p))
+                    xor_row(0xA800 + p * 0x800, pen + r * 0x50, b->width);
+
+    if (b->payload >= 0x22 && load_palette)  /* 16 colours from ports      */
+        for (i = 0; i < 16; i++) { ... out(0xA8/0xAA/0xAC/0xAE, nibbles); }
+}
+```
+
+`xor_row(seg, off, n)` is `plane[off + 0x50 .. +n] ^= plane[off .. +n]` — it folds
+one 80-byte VRAM row into the next.
+
+Two players exist and are chosen by the header byte:
+
+| player | image | used when |
+|---|---|---|
+| A | `0x5FCD` | `(flags & 0x70) != 0x40` |
+| B | `0x63E3` | `(flags & 0x70) == 0x40` |
+
+They differ only in how they fetch stream bytes: player A goes through the byte
+reader at `0x6213`, player B reads the block directly. Because flag `0x40` is set
+in **every** shipped block (and the byte reader returns bytes verbatim whenever
+that flag is set), both players behave identically on this data.
+
+Player positions: PD2 `CONVERT.EXE 0x5FCD`, `STARTUP.EXE 0x608F`,
+`TACTICS.EXE 0xC33F`, `BRIEFING.EXE 0x10AA1`, `OPENING.EXE 0x5D90`,
+`REPORT.EXE 0x802B`, `CHOICE.EXE 0x670C`, `PD2SHELL.EXE 0x5AF0`;
+PD1 `PREMIUM.EXE 0x63E8`, `STARTUP.EXE 0x5230`. (`MAKEINIT.EXE` and `GO.EXE` are
+different builds and do not contain it.)
+
+## 3. Why ports `0x7C` / `0x7E`
+
+Those two ports are the PC-98 **GRCG** (Graphic Charger), not the µPD7220:
+
+* `0x7C` — mode register: bit 7 enables the GRCG, bit 6 selects the
+  read-modify-write mode, bits 0..3 are the plane mask, and a **set** bit means
+  *no access* to that plane. That is why the stream carries tile bytes only for
+  the planes whose bit is **clear** (`mask = ~flags & 0x0F`).
+* `0x7E` — the four tile registers, written one byte per plane in **B, R, G, E**
+  order (the same order the raster codec uses).
+
+Once the GRCG is on, **the byte the CPU stores into GVRAM is irrelevant**: the
+hardware replaces it with the tile. So `stosb` is used purely as a *trigger* that
+stamps eight pixels, and the value the game writes into it is a don't-care (in
+XOR mode it is the OR of the differences between the incoming tile and the seed
+tile - a "did anything change" flag). This one fact explains why the earlier
+model, which read those `stosb` values as colours, could never match VRAM.
+
+## 4. The command stream
+
+The stream starts with one tile (one byte per written plane, four for a normal
+picture). Then, until the second `0x7F`:
+
+| byte | meaning |
 |---|---|
-| `< 0x80` | pen += `(c << 8) \| next_byte`, then write the current value |
-| `0x80..0xFC` | pen += `c - 0x80`, then write the current value |
-| `0x7D` | repeat the current value `count + 2` times; `count` is coded the same way (1 or 2 bytes) |
-| `0x7E` | new value: the helper reads `N` bytes and pushes them to the GDC |
-| `0x7F` | reset the pen to "home" (end of stream when it is the last byte) |
+| `< 0x7D` | `skip = (c << 8) \| next`, then stamp one byte |
+| `0x80..0xFD` | `skip = c - 0x80`, then stamp one byte |
+| `0x7D` | `count = ((d << 8) \| next) + 2`, or `(d - 0x80) + 2` when `d >= 0x80`; stamp the current tile `count` times |
+| `0x7E` | pen = base, and read a fresh tile |
+| `0x7F` | pen = base; the first one switches to the second pass, the second one ends the block |
 
-The helper (image `0x613E`) drives the GDC ports:
-* `0x7C ← 0x80 | plane_mask` — copy mode;
-* `0x7C ← 0xC0 | plane_mask` — XOR mode (then it returns the OR of the differences);
-* `0x7E ← 4 bytes` (the four planes of one 8-pixel group);
-* after the end of the stream — `0x7C ← 0`.
+A **stamp** writes the current tile at the current VRAM offset - one byte per
+written plane, eight pixels - and advances the offset by one. The offset is a
+plain byte offset into a VRAM plane, so a screen row is 80 bytes and a skip of
+`0x50` moves down exactly one row.
 
-## 5. What is already proven statistically
+In the second pass every stamp first pulls a fresh tile from the stream, so the
+stream naturally splits into "a few tiles stamped in long runs" and "a bitmap".
 
-* `0x7F` resets land on **VRAM row starts** (`offset % 80 == 0`): 20 of 26 in
-  `ELIOLA.GCP`, 15 of 19 in `CHARA#2` — so the pen walks rows of 80 bytes
-  (640 pixels);
-* PD1's `.GCP` carry no palette (every encoding checked) and no LZSS stream (32- or
-  16-bit size field), so they really are command streams;
-* the 4-plane structure is visible in the code itself: the helper always hands the
-  GDC exactly four bytes per group, and the plane mask decides which of them are
-  written and which become zero.
+`0x7F` is also what makes the model checkable: the player must hit the closing
+`0x7F` exactly when the block runs out of bytes. All **77** shipped blocks do -
+the same "consumed to the last byte" argument that validates the raster codec.
 
-## 6. What is left (and how one capture closes it)
+## 5. The row-XOR pass: the stream is a row *delta* image
 
-The value semantics and the row/plane structure are now recovered (section 7); what
-was missing earlier is that a block is not one picture but a stack of plane masks,
-so aligning "value 0..15 against one plane" could never match. The remaining work is
-mechanical: implement the bit-level layer alignment against the captured planes.
+Stop after §4 and the picture looks like coloured line art:
+[dithered outlines only](img/gcp_delta_vs_xor.png) (left). That is not the art -
+it is the encoding.
 
-## 7. Refined model (disassembly of the loader and the second player)
+The artist stored each row as the **XOR difference** from the row above, and the
+loader integrates it back:
 
-There are **two** players; the block's header byte decides which (`& 0x70`):
-
-* `0x5FCD` — when `(header & 0x70) != 0x40`;
-* `0x63E3` — when `(header & 0x70) == 0x40` (all the screen `.GCP`, e.g. `SPRE00.GCP`;
-  listing: `_dec/gcp_player2_convert.asm`).
-
-The `0x63E3` player reads unambiguously:
-
-```
-DL = the value (an argument, CONSTANT for the whole block)
-DI = the plane offset (an argument)
-the stream starts at block + block[8] + 9
-  < 0x7D  : skip = (c << 8) | next ; one write
-  >= 0x80 : skip = c - 0x80        ; one write
-  0x7D    : count = ((d << 8) | next) + 2 ; write the value that many times
-  0x7E    : reset the pen to DI
-  0x7F    : end of segment (return)
+```c
+for (r = 0; r < height - 1; r++)
+    plane[pen + (r+1)*0x50 ..][0 .. width] ^= plane[pen + r*0x50 ..][0 .. width];
 ```
 
-And the **loader** (`0x5EFC`) drives it like this:
+run `(flags & 0x30) >> 4` times - once for the plain screens (`0x50`), twice for
+the ones that also play the dissolve (`0x60`). After the pass the same block is a
+full illustration:
+
+![the same block after the row-XOR pass](img/gcp_chara0.png)
+
+This also explains the earlier finding that "`.GCP` carry no palette" on PD1:
+they do not need one to store the *mask*, and the screens' colours come from the
+48-byte tables inside the EXEs (`pd2pal.py --exe`, `docs/PALETTE_TABLES.md`).
+
+## 6. Palettes
+
+The 32-byte table at `+0xB` is the engine's packed form
+(`byte[2i] = (index << 4) | R`, `byte[2i+1] = (G << 4) | B`). It is
+self-describing: the high nibble of the second byte is the index it belongs to, so
+`pd2pal.palette_from_packed()` rejects anything that is not one of these tables.
+
+Carrying a table is not the same as *being drawn with* it, and the two cases
+differ:
+
+* **PD1 `.GCP`** have `+8 == 0`, i.e. no table at all. The screens' colours come
+  from the 48-byte banks inside the EXEs; `--pal-exe PREMIUM.EXE:0xEDF1` is a good
+  starting point for the portraits.
+* **PD2 `.GCP`** carry a table and most of them carry the default ramp
+  (`HARDY.GCP`, `KOGADO.GCP` are the two custom ones). The embedded table is what
+  `pd2gcp.py` uses by default.
+* **`CHARA.PCK`** entries carry the *default ramp* at `+0xB`, but the portrait
+  screens are drawn with the shared artwork palette
+  (`BRIEFING.EXE 0x234C6`). Compare:
+
+  ```
+  python pd2gcp.py --pck hdi/PD2D/CHARA.PCK out --entry 0
+  python pd2gcp.py --pck hdi/PD2D/CHARA.PCK out --entry 0 --pal-exe hdi/PD2D/BRIEFING.EXE:0x234C6
+  ```
+
+  The first run gives a plainly-coloured portrait, the second the artwork.
+
+The captions of the images above use the artwork palette for `CHARA.PCK` and the
+file's own table elsewhere. `pd2pal.py --suggest` ranks the candidates for a
+given asset; see [`PALETTE.md`](PALETTE.md) and [`PALETTE_TABLES.md`](PALETTE_TABLES.md).
+
+Rather than reason about which table belongs to which screen, sweep it:
+`pd2sweep.py` renders every picture it can find with every palette it can find
+and writes one labelled contact sheet per picture — 26 `.GCP` and 27 `CHARA.PCK`
+blocks against the whole EXE bank is 33 sheets for the HDI data.
 
 ```
-for each row (stride 0x50 = 80 bytes, one VRAM row):
-    si = base + row*0x50
-    if mask bit 1 -> 0x6388(0xA800, si, value)   /* plane B */
-    if bit 2      -> 0x6388(0xB000, si, value)   /* R */
-    if bit 4      -> 0x6388(0xB800, si, value)   /* G */
-    if bit 8      -> 0x6388(0xE000, si, value)   /* E */
+python pd2sweep.py --data hdi/PD2D -o out/sweep
+python pd2sweep.py --data hdi/PD2D -o out/sweep --orders all   # all channel permutations too
 ```
 
-So a `.GCP` picture is a **stack of layers**: each layer has a plane mask, a constant
-value byte, a height in rows and a per-row "skip then write" list (`0x7F` closes one
-row/plane segment). It is not one bitmap in the stream but **per-plane bit masks**
-that compose an indexed image.
+## 7. The dead Huffman branch
 
-The helper `0x6486` (for the `0x63E3` player) drives the GDC: `0x7C ← 0x80 | (flags & 0xF)`
-(plus `0xC0` for XOR when bit `0x80` is set), then four bytes to `0x7E`, where a
-plane's byte comes from the stream only if the matching mask bit is **clear**.
+The byte reader at `0x6213` has two modes. When flag `0x40` is set it returns the
+next byte from the block (`lodsb`); otherwise it walks a 256-symbol Huffman tree
+that a recursive builder at `0x6306` reads out of the stream
+(`1` = internal node, recurse twice; `0` = leaf, take the next 8 bits).
 
-Consequence for alignment: compare **bits** (layers are plane masks) and mind the
-`0x50` row stride. The first aligner did neither, hence zero real matches.
+That builder stores its `1`-children at `DGROUP:0x955E` and its `0`-children at
+`DGROUP:0x935E`, while the reader looks its `1`-children up at `DGROUP:0x915E`.
+The `0x915E` table is BSS and is written by nothing in any shipped build (all
+three `CONVERT.EXE` copies agree), so the compressed path would decode every
+`1`-branch as symbol 0. No shipped `.GCP` or `CHARA.PCK` entry reaches it: every
+one of them sets flag `0x40`. The branch is dead code, and this is why the
+earlier `0x7D/0x7E/0x7F` "grammar" could be read straight off the raw bytes.
 
-## 8. What has already been captured from the emulator
+## 8. Validation
 
-`_dbg\vram_dumper.bat` produced 21 frames from the game (title, biographies,
-posters and **mid-transition frames**): `pd2gfx/out/vram/pd1/`. For example
-`pd1_012_172051/preview.png` shows two posters blended through a checkerboard mask.
+* **Structural.** All 77 display lists (24 PD1 `.GCP`, 26 PD2 `.GCP`, 27
+  `CHARA.PCK` entries) consume their stream down to the closing `0x7F`;
+  `tools/verify.py` checks [8] and [9] enforce it, plus the header geometry of
+  four blocks.
+* **Content.** The output is not noise: `PD2TITLE.GCP` is the title screen with
+  its menu, `SPRE00.GCP` is the epilogue text screen (shown as a text raster with
+  correctly shaped kana), `CHARA.PCK` entries are the 160x240 portraits, and
+  `ELIOLA.GCP` is a full illustration whose character name is legible.
+* **Independent path.** `K_BLANC1.GCP`, `KOGADO.GCP` and `PLAN_GB/GC.GCP` have
+  `flags & 0x30 == 0`, so they exercise the player *without* the XOR pass; the
+  full-screen `SPRE00.GCP` renders correctly that way.
+* **Palette.** The 32-byte packed tables decode to the same 16 colours the
+  palette writer feeds to ports `0xA8/0xAA/0xAC/0xAE`, which is what
+  `pd2pal.py` already validated against live dumps.
 
-## 8a. Important correction: PD1's `.GCP` are NOT pictures
+## 9. Leftovers
 
-The disassembly shows the routines around `.GCP` in `CONVERT.EXE` are a
-**transition/wipe engine**:
-
-* `0x6388` — `xor_row(ds, bx, cx)`: `si = 0x50` and `[bx+si] ^= [bx]`, i.e. **XOR one
-  VRAM row into the next** (across the selected planes);
-* `0x63BD` — a fast `memset` (`rep stosw`) filling part of a plane;
-* the loader `0x5DE5` takes the plane mask (`~block[0] & 0x0F`), the **value**
-  `block[1]` (in PD1 `0x50`/`0x14` — the classic 50 %/25 % dither patterns) and the
-  height `u16@+2`, draws the mask with the player (`0x5FCD`/`0x63E3`), then runs the
-  XOR row dissolve.
-
-In other words, PD1's `.GCP` describe **how to reveal a picture that is already
-there** (dither + XOR); they do not contain pixels. The captured frames show it: in
-`pd1_012_172051` two posters are mixed by the checkerboard mask.
-
-So PD1's "only 6 pictures" is not an anomaly: the six `.ASK` are logos, and the
-character posters are stored **compressed** elsewhere. A "verbatim in VRAM" scan over
-29 files (with 68,505 informative 24-byte windows, i.e. no degenerate zero windows)
-found no match at all, confirming the data is compressed. Next step: run the known
-LZSS codec over `PREMIUM.EXE`, `STARTUP.EXE`, `LAGDISK1.EXE`, `LAMAIN.BIN`,
-`LALOCAL.BIN`, `LAEND.BIN`, `ALLOGO.BIN` and compare the output with the 21 captured
-frames (the reference already exists).
-
-## 9. Capturing the ground truth (ready to run)
-
-```powershell
-_dbg\run_vram_dump.bat            # PD1 (default)
-_dbg\run_vram_dump.bat pd2        # PD2 dash HDI
-```
-
-The script starts `tools/mcp_dump_vram.py`, then launches the game with
-`mcp_server`. Every 4 s the dumper freezes the guest, pulls the four planes through
-the debugger (`B.bin`, `R.bin`, `G.bin`, `E.bin` from segments
-`A800`/`B000`/`B800`/`E000`) plus the palette (`PC98 DACPAL`), and saves each
-**distinct** screen under `pd2gfx/out/vram/<version>/<frame>/` with a 640x400
-`preview.png`.
-
-Verified against the live emulator: DOSBox-X connects, `MEMDUMPBIN` delivers the
-planes, the palette parses, previews are written (the files land in the project
-folder — DOSBox-X writes them relative to its working directory, and paths with
-spaces and parentheses do not break it).
-
-Then align the stream with the real planes:
-
-```powershell
-python _dec\align_displaylist.py "pd2gfx\out\vram\pd1\pd1_000_HHMMSS" --data "power dolls 1\_unpacked"
-```
-
-The tool votes for the draw offset `D` (rare values vote first) and then re-checks
-the full match rate. Control on synthetic data: `D=0`, 400 votes against 7,
-**100%** match.
+* `CHARA.PCK` entries 27..37 are not display lists (11 entries). They do not
+  end with `0x7F` and do not decode; their role is still open.
+* `ANIME.PCK`, `EVENT.PCK`, `INIT.PCK`, `MAP_CHG.PCK`, `MES.PCK`, `MOJI.PCK`,
+  `NPC.PCK`, `MUNIT.PCK`, `TUNIT.PCK`, `NAMES.PCK`, `SCORE_N/SCORE_P.PCK`,
+  `OP_*.PCK`, `YAOUPD1.PCK`, the `MISSON*.PCK` set: not rasters, not display
+  lists either. Text, tables and yet-unidentified data.
+* PD1's `.GCP` palettes are still matched by hand (`--pal-exe`); the game picks
+  one of the 40 tables in `PREMIUM.EXE` per screen at run time.

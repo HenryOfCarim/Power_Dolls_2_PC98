@@ -112,9 +112,31 @@ SCREEN_CANONICAL_TABLES = {
     'startup': ('STARTUP.EXE', 0x9311),
 }
 
+# The Dash executables have different offsets from the original release. These
+# fingerprints let the same roles be recognized when a table moved in the EXE.
+# Values are 4-bit RGB triples in the order returned by tools/pal_tables.py.
+KNOWN_SCREEN_PALETTE_HEX = {
+    'artwork': '000 fdb fb8 b85 f77 68b 378 ddd 999 666 751 b55 cb8 575 fc7 fff',
+    'gameplay': '000 555 999 ddd f65 77f 04b fff fc8 ea6 a74 150 284 3a4 751 fdb',
+    'menu': '000 a96 cca f43 88c 38c 457 ccc 999 666 444 875 0c8 483 362 fff',
+    'startup': '000 fdb eb8 b84 e66 57b 249 ddd 999 555 753 431 0c9 493 fd7 fff',
+}
+SCREEN_PALETTE_SIGNATURES = {
+    tuple(tuple(int(color[i], 16) for i in range(3)) for color in encoded.split()): role
+    for role, encoded in KNOWN_SCREEN_PALETTE_HEX.items()
+}
+
 ASSET_ROLE_TOKENS = {
-    'artwork': {'BRIEFING', 'FACE', 'PORTRAIT', 'EQUIP', 'REPORT', 'OPENING', 'CHARA'},
-    'gameplay': {'TACTICS', 'BATTLE', 'COMBAT', 'GAMEPLAY'},
+    # Asset-to-module clues are drawn from the recovered load map (see
+    # docs/LOAD_ORDER.md); they remain heuristics, not per-image proof.
+    'artwork': {
+        'BRIEFING', 'FACE', 'PORTRAIT', 'EQUIP', 'REPORT', 'OPENING', 'CHARA',
+        'ARMS', 'BLANC', 'DFACE', 'EVKAO', 'EVENT', 'INIT', 'WEAPON', 'STAFF',
+    },
+    'gameplay': {
+        'TACTICS', 'BATTLE', 'COMBAT', 'GAMEPLAY', 'ANIME', 'DATAU', 'HIDAN',
+        'MES', 'MMAP', 'MUNIT', 'SCN', 'SCORE', 'SMAP', 'TUNIT', 'WMES',
+    },
     'menu': {'PD2SHELL', 'SHELL', 'MENU'},
     'startup': {'STARTUP', 'BOOT'},
 }
@@ -249,6 +271,14 @@ def show(pal):
     return " ".join(f"{r:x}{g:x}{b:x}" for r, g, b in pal)
 
 
+def screen_table_role(path, offset, palette):
+    """Return a verified role by known location or palette fingerprint."""
+    role = KNOWN_SCREEN_TABLES.get((os.path.basename(path).upper(), offset))
+    if role:
+        return role
+    return SCREEN_PALETTE_SIGNATURES.get(tuple(tuple(c) for c in palette))
+
+
 def list_packed_palettes(root):
     """Print packed palettes from .GCP files and .PCK entries under root."""
     if not os.path.isdir(root):
@@ -318,7 +348,7 @@ def suggest_screen_palettes(root, asset=None, limit=12):
         key = tuple(tuple(c) for c in pal)
         item = grouped.setdefault(key, {'sources': [], 'roles': set(), 'default': False})
         item['sources'].append((path, offset))
-        role = KNOWN_SCREEN_TABLES.get((os.path.basename(path).upper(), offset))
+        role = screen_table_role(path, offset, pal)
         if role:
             item['roles'].add(role)
 
@@ -367,7 +397,8 @@ def suggest_screen_palettes(root, asset=None, limit=12):
         print(f"  {index:2d}. {label}")
         if item['sources']:
             sources = sorted(item['sources'], key=lambda s: (
-                0 if KNOWN_SCREEN_TABLES.get((os.path.basename(s[0]).upper(), s[1])) in roles else 1,
+                0 if any(screen_table_role(s[0], s[1], tuple(tuple(c) for c in key)) == role
+                         for role in roles) else 1,
                 os.path.basename(s[0]).casefold(), s[1]))
             for path, offset in sources[:3]:
                 print(f'      {path} @ {offset:#x}  (--pal-exe "{path}:{offset:#x}")')
@@ -381,6 +412,13 @@ def infer_screen_role(asset):
     if not asset:
         return None, None
     asset = str(asset)
+    stem = os.path.splitext(os.path.basename(asset))[0].upper()
+    if stem.startswith('MISSON'):
+        return 'gameplay', 'MISSON'
+    if stem.startswith('OP') and len(stem) > 2 and stem[2].isdigit():
+        return 'artwork', 'OP'
+    if stem.startswith('END') and len(stem) > 3 and stem[3].isdigit():
+        return 'artwork', 'END'
     for text in (os.path.basename(asset), os.path.dirname(asset)):
         tokens = set(re.findall(r'[A-Z0-9]+', text.upper()))
         for role in ('artwork', 'gameplay', 'menu', 'startup'):
@@ -403,7 +441,7 @@ def known_screen_palettes(root):
         key=str.casefold)
     matches = {role: [] for role in SCREEN_ROLES}
     for path, offset, pal in _tables.scan(executables):
-        role = KNOWN_SCREEN_TABLES.get((os.path.basename(path).upper(), offset))
+        role = screen_table_role(path, offset, pal)
         if role:
             matches[role].append((path, offset, pal))
 

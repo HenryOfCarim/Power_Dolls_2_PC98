@@ -6,6 +6,7 @@ Usage:
     python pd2extract.py --ask  <file.ASK>       <outdir>
 Options:
     --palette pc98|gray|vivid   (default pc98)
+    --palette-map FILE.json     custom filename-to-.pal mappings for auto mode
     --pal FILE.pal              own palette file
     --pal-exe FILE.EXE:0xOFFSET a screen palette stored in an EXE, e.g.
                                 BRIEFING.EXE:0x234C6 (equip artwork) or
@@ -25,6 +26,7 @@ import os
 import sys
 import struct
 import argparse
+import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pd2img import (parse_entry, parse_archive, is_image_entry, is_raw_block,
@@ -51,6 +53,41 @@ def load_palette_file(path):
     from pd2pal import read_pal
     pal = read_pal(path)
     return [(r * 17, g * 17, b * 17) for r, g, b in pal]
+
+
+def load_palette_map(path):
+    """Load a JSON object mapping source basenames/stems to .pal files.
+
+    Relative palette paths are resolved from the JSON file's directory.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(str(e)) from e
+    if not isinstance(data, dict):
+        raise ValueError('expected a JSON object mapping asset names to .pal paths')
+
+    root = os.path.dirname(os.path.abspath(path))
+    result = {}
+    for asset_name, palette_path in data.items():
+        if not isinstance(asset_name, str) or not asset_name.strip():
+            raise ValueError('asset names must be non-empty strings')
+        if not isinstance(palette_path, str) or not palette_path.strip():
+            raise ValueError(f'{asset_name!r}: palette path must be a non-empty string')
+        key = asset_name.casefold()
+        if key in result:
+            raise ValueError(f'duplicate asset name ignoring case: {asset_name!r}')
+        resolved = palette_path if os.path.isabs(palette_path) else os.path.join(root, palette_path)
+        resolved = os.path.abspath(resolved)
+        if not os.path.isfile(resolved):
+            raise ValueError(f'{asset_name!r}: palette file not found: {resolved}')
+        try:
+            palette = load_palette_file(resolved)
+        except Exception as e:
+            raise ValueError(f'{asset_name!r}: cannot read {resolved}: {e}') from e
+        result[key] = (palette, resolved)
+    return result
 
 
 def save_png(w, h, indices, path, palette, scale=1):
@@ -84,6 +121,8 @@ def main():
     ap.add_argument('--palette', default='pc98', choices=['pc98', 'gray', 'vivid', 'auto'])
     ap.add_argument('--palette-dir', metavar='DIR',
                     help='directory with game EXEs for --palette auto; defaults to input directory')
+    ap.add_argument('--palette-map', metavar='FILE.json',
+                    help='custom asset-name to .pal mapping for --palette auto; relative paths use the JSON directory')
     ap.add_argument('--pal', metavar='FILE.pal',
                     help='use a palette file (JASC-PAL / raw 768 / 48-byte / 16x"R G B" text)')
     ap.add_argument('--pal-exe', metavar='FILE.EXE:0xOFFSET',
@@ -99,6 +138,8 @@ def main():
         ap.error('--palette auto cannot be combined with --pal or --pal-exe')
     if a.palette != 'auto' and a.palette_dir:
         ap.error('--palette-dir can only be used with --palette auto')
+    if a.palette != 'auto' and a.palette_map:
+        ap.error('--palette-map can only be used with --palette auto')
     raw_geom = None
     if a.raw_geom:
         try:
@@ -134,7 +175,14 @@ def main():
         pal = {'pc98': PC98, 'gray': GRAY, 'vivid': VIVID}[a.palette]
 
     auto_palettes = {}
+    auto_palette_overrides = {}
     if a.palette == 'auto':
+        if a.palette_map:
+            try:
+                auto_palette_overrides = load_palette_map(a.palette_map)
+            except ValueError as e:
+                ap.error(f'--palette-map: {e}')
+            print(f"palette auto: loaded {len(auto_palette_overrides)} custom mapping(s) from {a.palette_map}")
         if a.palette_dir:
             palette_root = a.palette_dir
         elif a.all:
@@ -153,9 +201,18 @@ def main():
     def palette_for(asset):
         if a.palette != 'auto':
             return pal
+        basename = os.path.basename(asset)
+        stem = os.path.splitext(basename)[0]
+        override = auto_palette_overrides.get(basename.casefold())
+        if override is None:
+            override = auto_palette_overrides.get(stem.casefold())
+        if override is not None:
+            chosen, source = override
+            print(f"  palette auto: custom mapping for {basename} -> {os.path.basename(source)}")
+            return chosen
         role, keyword = infer_screen_role(asset)
         if not role:
-            print(f"  palette auto: no filename hint for {os.path.basename(asset)}; using PC-98 default")
+            print(f"  palette auto: no filename hint for {basename}; using PC-98 default")
             return PC98
         candidate = auto_palettes.get(role)
         if candidate is None:

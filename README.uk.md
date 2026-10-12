@@ -10,9 +10,12 @@
 > `0xB`; 24 contain the PC-98 default ramp and two contain custom ramps. This is
 > not the screen palette used for artwork: screen palettes are 48-byte tables in
 > the EXEs (channel order B,R,G), passed with `--pal-exe`. `.GCP` files are GDC
-> display lists, not raster images. `pd2img.py` is the library,
+> display lists, not raster images — but they **are** decoded now: a GRCG tile
+> stream whose rows are XOR deltas, rendered by `pd2gcp.py` (77 blocks across
+> both games, including `CHARA.PCK`'s 27 portraits). `pd2img.py` is the library,
 > `pd2extract.py` the PNG dumper,
-> `pd2pal.py` the palette tool, `tools/verify.py` the self-check.
+> `pd2pal.py` the palette tool, `pd2gcp.py` the display-list tool,
+> `tools/verify.py` the self-check.
 > Docs are in Ukrainian; code and docstrings are in English.
 
 Розшифровка й витягування графіки з **Power Dolls 2** (Kogado Software
@@ -21,7 +24,9 @@ Products, PC-98, 1994).
 повинні працювати
 
 Кодек і контейнери відновлено з дизасемблера (`CONVERT.EXE`, образ `0x54E6`) і
-перевірено на всіх 360 растрових зображеннях. Пояснення про кольори — одразу після швидкого старту.
+перевірено на всіх 360 растрових зображеннях. Display-list'и `.GCP` /
+`CHARA.PCK` теж розкодовано — це потоки тайлів GRCG із рядками-дельтами XOR, а
+не растр. Пояснення про кольори — одразу після швидкого старту.
 
 ---
 
@@ -33,11 +38,13 @@ Products, PC-98, 1994).
 | Кодек (LZSS) | ✅ повністю, байт-точно |
 | Розкладка площин і бітів | ✅ доведено кодом вивантаження в GVRAM |
 | Витягування у PNG | ✅ 361 картинка (348 записів `.PCK`, 12 кадрів `.ASK`, «сирий блок» `S_ROLL.ASK`) |
+| **Display-list'и** (`.GCP`, `CHARA.PCK`) | ✅ **розкодовано** — 77 блоків рендеряться в PNG через `pd2gcp.py` |
+| **Збірка Advanced PD2** (`PD2DT.IDX` + `.BND`) | ✅ **розв'язано** — 169 членів, 74 `.PCK` + 39 `.GCP` + 9 `.ASK` + 6 `.SLD`, розрізає `pd2bnd.py` |
 | Механізм установки палітри | ✅ доведено |
 | Вбудовані 32-байтові палітри `.GCP` / `CHARA.PCK` | ✅ 26 таблиць у `.GCP` (2 кастомні) і 27 записів `CHARA.PCK` |
 | Палітри екранів | ✅ 48-байтові таблиці в EXE (порядок каналів B,R,G); їх знаходить `tools/pal_tables.py`, див. [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) |
 | Кольори прогону `--all` без параметрів | ⚠️ **можуть бути неправильні** — фолбек це шкала PC-98; див. примітку про палітру нижче |
-| `.GCP` як растр | ❌ це display-list для GDC, а не картинка |
+| `.GCP` як растр | ✅ це display-list для GRCG, і він рендериться — див. [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) |
 | Компресор | ❌ не відновлювався (він є в `CONVERT.EXE`) |
 
 ---
@@ -74,7 +81,22 @@ python pd2extract.py --all out\disks out\png --palette auto
 `--palette auto` застосує відому палітру екрана, якщо назва `.PCK`/`.ASK` дає
 підказку (наприклад, `FACE.PCK` → художня палітра); для невідомих назв буде
 стандартна палітра PC-98. Якщо EXE лежать окремо, передай їхню теку через
-`--palette-dir DIR`.
+`--palette-dir DIR`. Власну відповідність назви файла до `.pal` можна задати
+через JSON і `--palette-map`; наприклад, щоб примусово застосувати
+`REPORT.EXE_0138b7.pal` до `M_CLR.PCK`:
+
+```json
+{
+  "M_CLR": "out/palettes/REPORT.EXE_0138b7.pal"
+}
+```
+
+Збережи це як `palette-map.json` у корені проєкту. Шлях до `.pal` у JSON
+відносний до теки самого JSON-файла. Передай файл мапи під час витягування:
+
+```powershell
+python pd2extract.py --all out\disks out\png --palette auto --palette-map palette-map.json
+```
 
 Для одного HDI передай шлях до нього напряму, а потім вкажи витягнуту теку для
 `pd2extract.py`:
@@ -104,6 +126,29 @@ python pd2pal.py --list ..\hdi\PD2D
 
 # 5. самоперевірка (нічого не пише, тільки звіряє)
 python tools\verify.py --data ..\hdi\PD2D
+
+# 6. display-list'и: файли .GCP і CHARA.PCK
+python pd2gcp.py --gcp ..\hdi\PD2D\KOGADO.GCP out\kogado
+python pd2gcp.py --pck ..\hdi\PD2D\CHARA.PCK out\chara --entry 0
+python pd2gcp.py --all ..\hdi\PD2D out\display-list
+```
+
+Display-list'ам потрібен ще один рядок: `.GCP` у PD1 власної палітри не мають, а
+портрети `CHARA.PCK` малюються спільною палітрою малюнків, а не таблицею
+всередині блоку, тож для цих двох наборів потрібен `--pal-exe`:
+
+```powershell
+python pd2gcp.py --all "..\power dolls 1\_unpacked" out\pd1 --pal-exe "..\power dolls 1\_unpacked\PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --pck ..\hdi\PD2D\CHARA.PCK out\chara --pal-exe ..\hdi\PD2D\BRIEFING.EXE:0x234C6
+```
+
+Якщо не хочеться вгадувати, яка палітра якому екрану належить, — переберіть
+усе: `pd2sweep.py` розпаковує все, що знайде, збирає всі палітри, які знайде, і
+пише по одному підписаному контактному аркушу на картинку.
+
+```powershell
+python pd2sweep.py --data ..\hdi\PD2D -o out\sweep
+python pd2sweep.py --image ..\hdi\PD2S.HDI -o out\sweep --orders all
 ```
 
 ## Палітра: якщо кольори неправильні
@@ -160,7 +205,7 @@ for i, blob in parse_archive("FACE.PCK"):
 
 ```
 python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
-                     [--palette pc98|gray|vivid|auto] [--palette-dir DIR]
+                     [--palette pc98|gray|vivid|auto] [--palette-dir DIR] [--palette-map FILE.json]
                      [--pal FILE.pal]
                      [--pal-exe FILE.EXE:0xOFFSET] [--raw-geom WxH] [--scale N]
 ```
@@ -174,6 +219,7 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 | `--palette vivid` | контрастні кольори |
 | `--palette auto` | обрати відому палітру екрана за назвою; для невідомих назв — дефолт PC-98 |
 | `--palette-dir DIR` | шукати EXE для `--palette auto` тут (типово тека вводу) |
+| `--palette-map FILE.json` | власна відповідність базової назви файла або повного імені джерела до `.pal`; працює лише з `auto`, відносні шляхи — від теки JSON |
 | `--pal FILE.pal` | своя палітра (JASC-PAL, сирі 768 байтів, 48 байтів або текст) |
 | `--pal-exe FILE.EXE:0xOFFSET` | використати 48-байтову палітру екрана з EXE; див. примітку вище |
 | `--raw-geom WxH` | геометрія для «сирого блоку» `.ASK`; за замовчуванням виводиться з `decoded_size` (`S_ROLL.ASK` → 640x320) |
@@ -184,7 +230,92 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 12 кадрів `.ASK` і «сирий блок» `S_ROLL.ASK`.
 `--palette auto` вибирає відому палітру за назвою кожного джерела `.PCK`/`.ASK`;
 якщо підказки немає, лишає шкалу PC-98. Це евристика на рівні файла, не
-підтвердження палітри конкретного екрана.
+підтвердження палітри конкретного екрана. `--palette-map` задає винятки, які
+мають пріоритет над евристикою. Наприклад, запис `"M_CLR":
+"out/palettes/REPORT.EXE_0138b7.pal"` застосує цю палітру до `M_CLR.PCK`;
+також можна вказати повне ім'я, наприклад `"M_CLR.PCK"`. Порівняння назв не
+залежить від регістру.
+
+Щоб порівняти всі збережені палітри з одним файлом, запусти `pd2pal_sweep.py`.
+Він рекурсивно знаходить `.pal` у теці й записує результат кожного кандидата в
+окрему підтеку:
+
+```powershell
+python pd2pal_sweep.py ..\hdi\PD2D\FACE.PCK out\palettes out\face-sweep
+```
+
+Для сирого `.ASK` можна передати `--raw-geom WxH`, якщо розмір не визначається.
+
+### `pd2gcp.py` — display-list'и (`.GCP`, `CHARA.PCK`)
+
+```
+python pd2gcp.py (--all DIR | --gcp FILE | --pck FILE [--entry N]) OUTDIR
+                 [--pal FILE.pal] [--pal-exe FILE.EXE:0xOFFSET]
+                 [--full] [--no-xor] [--dump] [--list] [--scale N] [--base N]
+python pd2gcp.py --self-test
+```
+
+`.GCP` — не растр: це потік команд для **GRCG** PC-98 (порти `0x7C`/`0x7E`),
+рядки якого збережено як XOR-дельти, а завершує його прохід декодування XOR по
+рядках. Інструмент виконує завантажувач гри (`CONVERT.EXE 0x5DE5`), обох гравців
+(`0x5FCD` / `0x63E3`) і цей прохід, та записує картинку. Геометрія лежить у
+заголовку блоку, тож жодного пошуку вирівнювання не потрібно; 27 display-list'ів
+`CHARA.PCK` — це портрети 160x240, а 24 `.GCP` у PD1 — його повноекранні
+картинки. Повна модель: [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md).
+
+| опція | дія |
+|---|---|
+| `--all DIR` | усі `.GCP` під DIR і всі display-list'и в його `.PCK` |
+| `--gcp` / `--pck` | один файл / один архів (`--entry N` для одного запису) |
+| `--pal FILE.pal` | палітра для блоків, які її не несуть (усі `.GCP` у PD1) |
+| `--pal-exe FILE.EXE:0xOFFSET` | одна з 48-байтових палітр екранів усередині EXE |
+| `--full` | лишити оголошену область `width x height`, а не обрізати за намальованим |
+| `--no-xor` | зупинитися після display-list'а — це сира дельта-маска по рядках |
+| `--dump` | додатково записати `<image>.txt` — декодований список команд |
+| `--list` | надрукувати таблицю знайдених блоків |
+| `--self-test` | перевірити модель на зібраних вручну блоках, нічого не пише |
+
+### `pd2sweep.py` — брутфорс-перебір палітр
+
+Палітра — єдине, що не виводиться з файлів: гра обирає таблицю під час
+виконання, а `.GCP` у PD1 не мають її взагалі. Цей інструмент припиняє
+здогадуватися й рендерить усе з усім.
+
+```
+python pd2sweep.py --data DIR  -o OUTDIR [--mode sheets|full|both] [--cell 160]
+                   [--orders engine|all] [--palette-dir DIR]
+                   [--images GLOB] [--palettes GLOB] [--max-palettes N] [--list]
+python pd2sweep.py --image PD2S.HDI -o OUTDIR          # спершу розпакує образ диска
+```
+
+| опція | дія |
+|---|---|
+| `--data DIR` / `--image FILE` | розпаковане дерево даних або `.HDI`/`.FDI`/`.fdd`/`.d88`, який спершу розпакує `tools/img_extract.py` |
+| `--mode sheets` | **типово**: один контактний аркуш на картинку — клітинка на палітру, з підписами; власна палітра блоку йде першою й позначена `*` |
+| `--mode full` / `both` | додатково окремий PNG на кожну пару картинка×палітра (`full/`) |
+| `--cell` / `--cols` / `--scale` | розмір клітинки, клітинок у рядку, збільшення для `full` |
+| `--orders all` | ще й п'ять інших перестановок каналів для кожної 48-байтової таблиці з EXE |
+| `--palette-dir DIR` | додати всі `.pal` з DIR |
+| `--images` / `--palettes` | фільтри-glob за id картинок і палітр (можна повторювати) |
+| `--max-palettes N` | обмежити кількість палітр на аркуші (власна палітра картинки виживає) |
+| `--split-bundles` | з `--data` ще й розпакувати кожну пару `.IDX`/`.BND` (Advanced PD2 тримає всю гру в одній збірці). `--image` робить це автоматично |
+| `--list` | показати знайдені картинки й палітри, нічого не писати |
+
+Перебирає **усі** види картинок, які знайде (растрові записи `.PCK`/`.ASK`,
+«сирі блоки», display-list'и `.GCP` і `CHARA.PCK`, а також членів збірки
+`.IDX`/`.BND`) проти **усіх** палітр, які знайде (паковані таблиці `+0xB` з
+файлів даних, усі 48-байтові таблиці з EXE через `tools/pal_tables.py`, усі
+вказані `.pal` і стандартна гама PC-98). Вивід:
+
+```
+OUTDIR/palettes/<NNN>_<id>.pal     кожна унікальна палітра, JASC
+OUTDIR/palettes/index.txt          номер -> id, джерело, hex — на нього посилаються підписи
+OUTDIR/sheets/<picture>.png        контактний аркуш
+```
+
+Контактний аркуш тут кращий за окремі файли: 400 картинок × 60 палітр — це чверть
+мільйона PNG, тоді як аркуш — один файл на картинку й один погляд на палітру.
+Клітинки підписані `*N id`, де `*` позначає палітру, яку блок несе сам.
 
 ### `pd2pal.py` — палітри
 
@@ -238,10 +369,32 @@ python pd2raw.py --all  DIR      -o OUTDIR
 `pd2img.is_raw_block`, тому `pd2extract.py` теж рендерить такий файл як
 картинку (геометрія з `decoded_size` або з `--raw-geom WxH`).
 
+### `pd2bnd.py` — збірка `.IDX` + `.BND` (Advanced PD2)
+
+Advanced PD2 не постачає файлів даних гри окремо: він постачає `PD2DT.BND`
+(7.2 МБ конкатенованого payload'у) разом із `PD2DT.IDX` — таблицею вмісту.
+
+```
+python pd2bnd.py --list PD2_3/PD2DT.IDX
+python pd2bnd.py --idx PD2_3/PD2DT.IDX --bnd PD2_3/PD2DT.BND -o out/apd2
+python pd2bnd.py --auto extracted_dir -o out/bundles
+python pd2bnd.py --self-test
+```
+
+`.IDX` — це плаский масив 24-байтових записів (`name[16]`, `size` u32,
+`offset` u32), а `.BND` — сира конкатенація, яку вони описують. 169 членів, без
+стиснення й вирівнювання: `offset[k] + size[k] == offset[k+1]` для кожного k, а
+останній член закінчується рівно на останньому байті збірки, тож таблиця
+перевіряє себе сама. У payload'і 74 `.PCK`, 39 `.GCP`, 9 `.ASK`, 6 `.SLD` плюс
+драйвери, MIDI й дані установлювача — зокрема екрани, яких немає в інших релізах
+(`SINGLE`, `GAMEOVER`, `M_FAIL`, `AD_END`, `APD_STF*`, `KOKUPI*`).
+Деталі: [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.uk.md).
+
 ### `tools/verify.py` — самоперевірка
 
-Нічого не пише; звіряє твердження зі [`docs/FORMAT.md`](docs/FORMAT.uk.md) і
-[`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.uk.md):
+Нічого не пише; звіряє твердження зі [`docs/FORMAT.md`](docs/FORMAT.uk.md),
+[`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.uk.md) і
+[`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md):
 
 1. декодер лежить **рівно за документованими адресами** в 7 бінарниках HDI та
    8 бінарниках флопі-релізу (з урахуванням двох форм прологу);
@@ -257,7 +410,12 @@ python pd2raw.py --all  DIR      -o OUTDIR
    дефолтні;
 6. чотири відомі палітри екранів лежать в EXE за задокументованими зсувами
    (порядок каналів B,R,G);
-7. `S_ROLL.ASK` — «сирий блок», його геометрія виводиться як 640x320.
+7. `S_ROLL.ASK` — «сирий блок», його геометрія виводиться як 640x320;
+8. усі display-list'и (26 `.GCP` у теці даних + 27 записів `CHARA.PCK`)
+   доходять до закривного `0x7F` рівно тоді, коли в блоці закінчуються байти;
+9. геометрія з заголовка display-list'а для чотирьох відомих блоків
+   (`KOGADO.GCP` 24×56, `K_BLANC1.GCP` 48×112, `PD2TITLE.GCP` 80×400,
+   `USAGI.GCP` 10×80).
 
 ```
 python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked"
@@ -298,9 +456,10 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 | `.ASK` | `u32 decoded_size; u16 x,y,w,h` | 12 | так (крім `S_ROLL.ASK` — він «сирий блок») |
 | `.PCK` | архів записів, кожен — як `.ASK` | 12 | буває по-різному: частина записів — display-list'и |
 | `.SLD` | `u32 decoded_size` | 4 | ні (це дані) |
-| `.GCP` | заголовок + **32-байтова packed-палітра** + display-list | `0x2B` | **ні** — це команди для GDC |
+| `.GCP` | заголовок + необов'язкова **32-байтова packed-палітра** + display-list | `9 + hdr[8]` (`0x2B`, коли палітра є) | не растр, але **так, рендериться** — display-list GRCG, див. `pd2gcp.py` |
 
-Повний розбір — [`docs/FORMAT.md`](docs/FORMAT.uk.md).
+Повний розбір контейнерів — [`docs/FORMAT.md`](docs/FORMAT.uk.md), а `.GCP` —
+[`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md).
 
 ---
 
@@ -311,9 +470,9 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 | [`docs/FORMAT.md`](docs/FORMAT.uk.md) | **глибокий огляд:** усі контейнери, точний алгоритм кодека, стан, біт-рідер, токени, пастки, розкладка виводу, доведення правильності |
 | [`docs/PALETTE.md`](docs/PALETTE.uk.md) | основи палітр: як вибрати палітру екрана, що означає 32-байтова шкала в `.GCP` і як отримати правильні кольори |
 | [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) | докази й деталі 48-байтових таблиць палітр екранів у EXE, порядок каналів B,R,G і як знаходити/витягувати таблиці |
-| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.uk.md) | Advanced PD2: розкладка `.fdd` без BPB, контейнер `BIGFILE`, що це патч-надбудова над PD2 |
-| [`docs/PD1.md`](docs/PD1.uk.md) | Power Dolls 1: чому там 6 картинок — графіка лежить у display-list'ах `.GCP` (той самий формат, що `CHARA.PCK` у PD2) |
-| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) | display-list'и: знайдено рутину (10 бінарників, обидві ігри), грамматика потоку, що лишилось |
+| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.uk.md) | Advanced PD2: розкладка `.fdd` без BPB, збірка `PD2DT.IDX` + `.BND` (169 членів, розв'язано), що це патч-надбудова над PD2 |
+| [`docs/PD1.md`](docs/PD1.uk.md) | Power Dolls 1: шість логотипів `.ASK` плюс 24 display-list'и `.GCP` — його портрети й екрани |
+| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) | display-list'и розв'язано: модель GRCG, завантажувач і обидва гравці, потік команд, прохід декодування XOR по рядках, палітри, перевірка |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.uk.md) | порядок завантаження з HDI, карта `EXEC`, таблиця розташування декодера в 15 бінарниках, як резолвити DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.uk.md) | пастки, які збили попередні дослідження (щоб не повторити) |
 | [`docs/LIVE_PALETTE_DUMP.uk.md`](docs/LIVE_PALETTE_DUMP.uk.md) | живий знімок палітри з DOSBox-X: MCP-тули (`dosbox_mcp_palette.py`, `mcp_probe.py`, `mcp_poll_palette.py`, `mcp_dump_vram.py`), `pal_from_shot.py` і закритий експеримент «дампер усередині гостя» |
@@ -326,13 +485,18 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 ## Обмеження
 
 * **Палітра:** растрові записи зазвичай не мають палітри екрана; без `--pal`
-  або `--pal-exe` використовується шкала PC-98. `.GCP` — display-list для GDC.
-  Див. примітку про палітру вище.
+  або `--pal-exe` використовується шкала PC-98. З display-list'ами та сама
+  історія: `.GCP` несуть 32-байтову таблицю, але в PD1 її немає взагалі, а
+  портрети `CHARA.PCK` малюються палітрою малюнків, а не таблицею всередині
+  блоку. Див. примітку про палітру вище та §6 у
+  [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md).
 * **Компресор** не відновлювався; він є в `CONVERT.EXE` (шукати поруч із
   декодером за образом `0x54E6`).
 * Кілька архівів не містять картинок взагалі (`MES`, `WMES`, `NAMES`, `MOJI`,
   `NPC`, `MUNIT`, `TUNIT`, `MAP_CHG`, `MISSON*D`, `SCEN_MIS`, `YAOUPD1`,
-  `CHARA`, `ANIME`) — там текст або display-list'и.
+  `CHARA`, `ANIME`) — там текст або display-list'и. З них display-list'и вже
+  розкодовано (`pd2gcp.py`: 27 із 38 записів `CHARA.PCK`); решта — досі не
+  ідентифіковані дані.
 
 ---
 

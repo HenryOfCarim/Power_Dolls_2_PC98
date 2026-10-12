@@ -98,22 +98,30 @@ How to tell it apart from §2.1: with the correct variant the stream is consumed
 byte — the tail of the bit buffer). For `S_ROLL.ASK` the 12-byte-header variant
 yields 102262 bytes and then hits the end of the stream — i.e. it is wrong.
 
-### 2.4 `.GCP` — NOT a picture
+### 2.4 `.GCP` — a display list, not a bitmap
 
-`.GCP` is a **command list for the PC-98 GDC hardware**. The handler at
-`CONVERT.EXE` image `0x5CE2`:
+`.GCP` is a **command list for the PC-98 GRCG hardware** (ports `0x7C`/`0x7E`).
+The handler at `CONVERT.EXE` image `0x5DE5`:
 
 * opens the file and reads it whole into a buffer;
 * `mov dx,0x7c / out dx,al` and `mov dx,0x7e / out dx,al` — it writes directly
-  to the GDC ports;
+  to the GRCG mode and tile registers;
 * takes bytes at offsets `0,1,2,3` and (conditionally) `8,9,10`;
-* computes the destination address as `y*0x50 + x/8` (VRAM stride = 80).
+* runs a command stream whose offsets are plain VRAM byte offsets
+  (stride `0x50` = 80 = one 640-pixel row), then applies a row-XOR decode pass.
 
-A `.GCP` header is 12 bytes, followed by a **32-byte palette at offset `0xB`**
-(see [`PALETTE.md`](PALETTE.md)) and then commands from offset `0x2B`. That table
-is also the extractor's fallback palette — and it is **not** the palette the game
-uses for its artwork screens, so a render without `--pal`/`--pal-exe` has wrong
-colours; see the "read first" section of [`PALETTE.md`](PALETTE.md).
+A `.GCP` header is 12 bytes, followed - when byte `+8 >= 0x22` - by a
+**32-byte palette at offset `0xB`** (see [`PALETTE.md`](PALETTE.md)) and then
+commands from offset `0x2B`. PD1's `.GCP` have `+8 == 0`: no palette, commands
+from offset 9. That table is also the extractor's fallback palette — and it is
+**not** always the palette the game uses for its artwork screens, so a render
+without `--pal`/`--pal-exe` can have wrong colours; see the "read first" section
+of [`PALETTE.md`](PALETTE.md).
+
+`.GCP` is not a bitmap, but it is not opaque either: the commands rebuild the
+bitmap, and `pd2gcp.py` renders it. The full model — the header fields, the
+command grammar, the GRCG tile semantics and the row-XOR pass — is in
+[`DISPLAYLIST.md`](DISPLAYLIST.md).
 
 A picture does not carry the palette it is displayed with: most `.ASK`/`.PCK` image
 entries hold none at all (`FACE.PCK`: 0 of 38), and the 32-byte table some of them
@@ -339,9 +347,11 @@ against GVRAM.
 * **The compressor.** The packer is in `CONVERT.EXE` (it owns both the
   `.pck`/`.gcp` extensions and the strings `rb`/`wb`,
   `File is not found <%s>`). Look next to the decoder at image `0x54E6`.
-* **`.GCP` / display lists.** The command semantics were not worked out
-  (handler `0x5CE2`). Only needed if these screens must be reproduced without
-  the game.
+* **`.GCP` / display lists** — solved: the commands, the GRCG tile semantics and
+  the row-XOR decode pass are recovered and `pd2gcp.py` renders them. What is
+  still open is the per-screen palette for PD1's `.GCP` (the game picks one of the
+  40 tables in `PREMIUM.EXE` at run time) and the 11 `CHARA.PCK` entries that are
+  neither rasters nor display lists — [`DISPLAYLIST.md`](DISPLAYLIST.md).
 * **Exact palettes of the artwork screens** — solved: the tables ship inside the
   EXEs (48 bytes, channel order B,R,G) — [`PALETTE_TABLES.md`](PALETTE_TABLES.md),
   `tools/pal_tables.py`, or `pd2extract.py --pal-exe "FILE.EXE:0xOFFSET"`. Which

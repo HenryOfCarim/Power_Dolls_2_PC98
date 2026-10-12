@@ -51,7 +51,7 @@ extractor with `--pal-exe`:
 | battle / tactics gameplay | `--pal-exe TACTICS.EXE:0x1ECA4` |
 | shell / menu | `--pal-exe PD2SHELL.EXE:0x98E6` |
 | startup screen | `--pal-exe STARTUP.EXE:0x9311` |
-| inspecting the embedded ramp in `HARDY.GCP` / `KOGADO.GCP` | `python pd2pal.py --gcp HARDY.GCP -o out\hardy.pal` extracts its 32-byte palette; `.GCP` is a GDC display list and cannot be rendered by `pd2extract.py` |
+| inspecting the embedded ramp in `HARDY.GCP` / `KOGADO.GCP` | `python pd2pal.py --gcp HARDY.GCP -o out\hardy.pal` extracts its 32-byte palette; `.GCP` is a display list, rendered by `pd2gcp.py` rather than `pd2extract.py` |
 
 ```powershell
 # the artwork palette, verified on the equip screen
@@ -240,19 +240,50 @@ python pd2pal.py --default --fmt nibbles -o out\d.nib  # 48 raw bytes
 ### Option D — let `pd2extract.py` apply a heuristic
 
 For recursive or single-file extraction, `--palette auto` scans the extracted
-game directory for the four known EXE screen palettes and uses a filename hint
-for each `.PCK`/`.ASK` source:
+game directory for the four known EXE screen palettes (by known location or
+palette fingerprint, so moved tables in Dash builds are recognized) and uses a
+filename hint for each `.PCK`/`.ASK` source:
 
 ```powershell
 python pd2extract.py --all ..\hdi\PD2D out\png --palette auto
 python pd2extract.py --pck ..\hdi\PD2D\FACE.PCK out\face --palette auto
 ```
 
+To pin a custom mapping, create a JSON object from a source name (basename
+without extension or full filename) to a `.pal` path:
+
+```json
+{
+  "M_CLR": "out/palettes/REPORT.EXE_0138b7.pal"
+}
+```
+
+The palette path can be absolute or relative to the JSON file's directory.
+Pass the mapping file during extraction; custom entries take precedence over
+the built-in `auto` hints:
+
+```powershell
+python pd2extract.py --all ..\hdi\PD2D out\png --palette auto --palette-map palette-map.json
+```
+
+Name matching is case-insensitive. For example, `M_CLR` matches `M_CLR.PCK`,
+and you can use `M_CLR.PCK` when you want to specify the exact source filename.
+
 If the EXEs are elsewhere, pass `--palette-dir DIR`. A name such as `FACE.PCK`
-selects the known artwork role; names without a recognized role use the PC-98
-default ramp. This does not infer a palette from the pixel values, and it does
-not establish which screen an unknown asset belongs to. Use the shortlist from
+selects the known artwork role; names such as `DATAU.PCK` and `MISSONHD.PCK`
+select gameplay. Names without a recognized role use the PC-98 default ramp.
+This does not infer a palette from the pixel values, and it does not establish
+which screen an unknown asset belongs to. Use the shortlist from
 `python pd2pal.py --suggest ..\hdi\PD2D --for FILE.ASK` to inspect alternatives.
+
+To compare a file against every dumped `.pal` candidate, run:
+
+```powershell
+python pd2pal_sweep.py ..\hdi\PD2D\FACE.PCK out\palettes out\face-sweep
+```
+
+The script searches palette files recursively and writes one subdirectory per
+palette, so the rendered versions can be compared side by side.
 
 ---
 
@@ -274,8 +305,15 @@ not establish which screen an unknown asset belongs to. Use the shortlist from
   `.png` + `.pal`) and use the sidecar, or locate the shipped table behind the
   capture with `tools/pal_tables.py --find capture\game_analog.rgb`, then use
   `--pal-exe` for everything from that screen.
-* **`.GCP` files cannot be rendered at all** — they are display lists for the GDC
-  (§3 above); the 32-byte palette inside them only matters to the code that draws
-  them.
+* **`.GCP` files are not rasters but they do render** — `pd2gcp.py` decodes the
+  display list ([`DISPLAYLIST.md`](DISPLAYLIST.md)). PD1's `.GCP` carry no palette
+  at all, so they always need `--pal`/`--pal-exe`; PD2's carry one (the default
+  ramp in 24 of 26) and `CHARA.PCK`'s portraits are drawn with the shared artwork
+  palette rather than their own table.
+* **When nothing else works, sweep.** `pd2sweep.py --data DIR -o out/sweep`
+  renders every picture the tree contains with every palette it can find and
+  writes one labelled contact sheet per picture (`palettes/index.txt` maps the
+  cell numbers to the palette sources). `--orders all` also tries the five other
+  channel permutations of each 48-byte table.
 * **The geometry is always right.** A render that "looks wrong" is a palette
   mismatch, not a decode failure — [`PITFALLS.md`](PITFALLS.md) §12.

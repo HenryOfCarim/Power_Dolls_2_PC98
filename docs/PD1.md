@@ -2,71 +2,79 @@
 
 # Power Dolls 1 (S-Premium Disc) — where the graphics live
 
-## 1. Short answer: 6 PNGs is not a bug
+## 1. Short answer
 
-The disc really does hold only **six raster pictures**, and all of them are small
-logos:
+The disc holds six raster pictures (`.ASK`, all of them small logos) and **24
+`.GCP` display lists** of 8–95 KB named after characters (`ELIOLA`, `JULLY`,
+`MARRY`, `MELL`, `RISSA`, `SELMA`, `HUANG`, `MARGA`, `CHARA04…CHARA20`,
+`PD_LOGO`, `PL00`, `SPRE00…SPRE04`).
 
-| file | size | picture |
-|---|---|---|
-| `KGD.ASK` | 1330 B | 192×56 (the KOGADO logo) |
-| `DETA.ASK` | 1021 B | 200×76 |
-| `SERV.ASK` | 745 B | 136×72 |
-| `LIM.ASK` | 659 B | 128×72 |
-| `LINE.ASK` | 445 B | 88×72 |
-| `OF.ASK` | 228 B | 48×60 |
+`.GCP` is not a raster but it is **not lost data either**: it is the same display
+list format PD2 keeps in `CHARA.PCK`, it is decoded now, and all 24 files convert
+to PNG:
 
-Everything else is **24 `.GCP` files** of 8–95 KB named after characters
-(`ELIOLA`, `JULLY`, `MARRY`, `MELL`, `RISSA`, `SELMA`, `HUANG`, `MARGA`,
-`CHARA04…CHARA20`, `PD_LOGO`, `PL00`, `SPRE00…SPRE04`). Those are the "missing"
-portraits and screens.
+```
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+```
 
-## 2. Why they do not convert: they are display lists, not rasters
+Eight of them are 160x240 character portraits (`CHARA04…CHARA20`), sixteen are
+full 640x400 screens. `ELIOLA.GCP` is a complete illustration and the
+`SPRE00…SPRE04` set is the epilogue text screens.
 
-PD1's `.GCP` format is **the same GDC command stream** that PD2 keeps in
-`CHARA.PCK` and in its own `.GCP` files. Evidence:
+## 2. What they are, precisely
+
+[`DISPLAYLIST.md`](DISPLAYLIST.md) has the full model. In one line: a `.GCP` is a
+GRCG tile stream whose rows are stored as XOR deltas, and the loader at
+`CONVERT.EXE 0x5DE5` paints it and then integrates the rows.
 
 | property | PD1 `.GCP` | PD2 `CHARA.PCK` |
 |---|---|---|
 | head | `50 14 f0 00` (6 files), `60 14 f0 00` (2) | `60 14 f0 00` (20 entries), `50 14 f0 00` (7) |
-| "screen" head type | `60 50 90 01` (10), `40 50 90 01` (6) | the same first 4 bytes in `.GCP` (e.g. `BUSOU_B.GCP`) |
-| terminator | **all 24** end with byte `7f` | 27 of 38 end with `7f` |
-| byte histogram | dominated by `00 80 01 81 7e 02 …` | the same picture |
-| length parity | 11 odd, 13 even | — |
-| palette inside | **none**, in any encoding | yes (32 bytes at `0xB`) |
+| "screen" head type | `60 50 90 01` (10), `40 50 90 01` (6) | the same first 4 bytes in its own `.GCP` |
+| terminator | **all 24** end with `7f` | 27 of 38 end with `7f` |
+| geometry in the header | yes: e.g. `20 x 240`, `80 x 400` | yes: `20 x 240` |
+| palette inside | **none** in any encoding | 32 bytes at `0xB` (the default ramp) |
+| rendered | ✅ `pd2gcp.py` | ✅ `pd2gcp.py` |
 
-The last two rows are what rules out a raster: a real 4-plane bitmap has an even
-length `w*h/2`, and no palette is stored in these streams at all.
+The `0x7D / 0x7E / 0x7F` bytes that earlier looked like a puzzle are the command
+grammar, and the byte histogram (`00 80 01 81 7e 02 …`) is the skip/write pattern
+of a bitmap, which is exactly what it turned out to be.
 
 ## 3. So where do the 40 palettes come from
 
 From the **EXEs**: 37 tables in `PREMIUM.EXE` and 6 in `STARTUP.EXE` (40 distinct
 after deduplication). That is the same "bank of screen palettes" pattern as in
-PD2: the code picks a table and hands it to the palette writer. So "many palettes,
-little raster" is the expected picture — the palettes exist, the pictures are
-drawn by display lists.
+PD2: the code picks a table and hands it to the palette writer. PD1's `.GCP`
+carry no palette at all, so a render needs `--pal` / `--pal-exe`:
 
-Consequence for any render: the pictures carry no palette, so the extractor falls
-back to the `.GCP` default ramp and the colours are wrong even though the geometry
-is right — see the "read first" section of [`PALETTE.md`](PALETTE.md).
+```
+python pd2gcp.py --gcp "power dolls 1/_unpacked/CHARA04.GCP" out \
+                 --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+```
+
+`0xEDF1` is the artwork palette (skin tones first); `pd2pal_sweep.py` and
+`pd2pal.py --suggest` help to pick another one.
 
 ## 4. What this means for PD2
 
-The same blocker applies to PD2: the extractor still reports `CHARA.PCK`,
-`ANIME.PCK`, `EVENT.PCK` and `MAP_CHG.PCK` as "0 image entries". One display-list
-decoder therefore unlocks, at once:
+The same decoder covers PD2: `CHARA.PCK`'s 27 display lists are the 160x240
+portraits, and PD2's own `.GCP` files are the title screen, the background plates
+(`KABE*`, `K_BLANC*`), the score and planning panels and the Kogado logo.
 
-* Power Dolls 1's portraits and screens (24 `.GCP`);
-* Power Dolls 2's characters, animation and events (`CHARA`/`ANIME`/`EVENT`).
+It does **not** cover everything: `ANIME.PCK`, `EVENT.PCK`, `INIT.PCK`,
+`MAP_CHG.PCK`, `MES.PCK`, `MOJI.PCK`, `NPC.PCK`, `MUNIT.PCK`, `TUNIT.PCK`,
+`NAMES.PCK`, `SCORE_N/SCORE_P.PCK`, `OP_*.PCK`, `YAOUPD1.PCK` and the
+`MISSON*.PCK` set are neither rasters nor display lists — they hold text, tables
+and data that is still unidentified. See the tail of
+[`DISPLAYLIST.md`](DISPLAYLIST.md).
 
-## 5. Next steps
+## 5. What is still open
 
-1. **Static.** PD2's display-list handler is documented: `CONVERT.EXE` image
-   `0x5CE2` (it writes ports `0x7C`/`0x7E`). PD1's equivalent lives in
-   `PREMIUM.EXE`/`STARTUP.EXE` (same library). Disassemble it and recover the
-   command set; the byte histogram (`80`/`00`, `81`/`01`, `7e`) hints at a byte
-   stream with a flag bit in the high bit.
-2. **Dynamic (ground truth).** Take a DOSBox-X save state on a portrait screen —
-   the VRAM then gives the byte-exact expected result, i.e. a known-answer pair to
-   validate the decoder against (exactly how the LZSS codec was cracked). VRAM
-   rendering already exists: `tools/render_vram.py`.
+1. **The per-screen palette.** PD1 ships 40 tables and picks one at run time; the
+   extractor takes whatever `--pal-exe` is given. Matching each `.GCP` to its
+   screen palette (the way `docs/PALETTE_TABLES.md` did for PD2) would make the
+   PD1 set convert with no arguments.
+2. **PD1's `.GCP` that are not portraits or screens.** `JI.GCP` is the smallest
+   full-screen block (8 KB); blocks like it are likely overlays drawn on top of
+   something already in VRAM. `pd2gcp.py --no-xor` shows the raw row-delta mask,
+   which is the right input for that kind of overlay work.

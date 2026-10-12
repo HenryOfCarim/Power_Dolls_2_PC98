@@ -96,15 +96,24 @@ match. That is exactly why sweeps over the canonical variants failed.
 
 ---
 
-## 6. `.GCP` is not a picture
+## 6. `.GCP` is not a picture — but it does render
 
 `CHARA.PCK`, `ANIME.PCK`, `MES.PCK`, `INIT.PCK`, `MAP_CHG.PCK`, `MISSON*D.PCK`
 and others share **the same 12-byte prefix** as pictures and are easily mistaken
-for rasters. In fact they are display lists for the hardware GDC (handler
-`CONVERT.EXE` image `0x5CE2`, writing to ports `0x7C`/`0x7E`).
+for rasters. In fact they are display lists for the PC-98 GRCG (handler
+`CONVERT.EXE` image `0x5DE5`, writing to ports `0x7C`/`0x7E`).
 
 The distinguishing sign: `decoded_size == w*h/2` does not hold. That test (plus
 `width % 8 == 0`) separates the two.
+
+Do not take the next step and conclude that the display lists are unreadable data.
+They are command streams that rebuild a bitmap, and `pd2gcp.py` renders them
+([`DISPLAYLIST.md`](DISPLAYLIST.md)). The trap is subtler than "not a raster": the
+`stosb` in the player looks like it paints a byte per pixel, but the GRCG replaces
+the stored byte with its tile register, so the value written is a don't-care and
+the *tile* is the pixel data. Reading those values as colours produces an image
+that is shaped right and coloured wrong, which is the most misleading result
+possible.
 
 ---
 

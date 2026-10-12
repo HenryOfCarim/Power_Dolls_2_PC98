@@ -7,8 +7,10 @@ Reverse-engineered decoder and extraction tools for the graphics of
 Special editions like *Power Dolls 2 Dash* and *Advanced Power Dolls 2 Dash* should work too.
 
 The codec and containers were recovered from the disassembler (`CONVERT.EXE`,
-image offset `0x54E6`) and verified against all 360 raster images.
-For palette help, see the note after Quick start.
+image offset `0x54E6`) and verified against all 360 raster images. The `.GCP` /
+`CHARA.PCK` display lists are decoded too — they turned out to be GRCG tile
+streams with XOR-delta rows, not rasters. For palette help, see the note after
+Quick start.
 
 ---
 
@@ -20,11 +22,13 @@ For palette help, see the note after Quick start.
 | Codec (LZSS) | ✅ complete, byte-exact |
 | Plane / bit layout | ✅ proven from the GVRAM blit code |
 | Extraction to PNG | ✅ 361 pictures (348 `.PCK` entries, 12 `.ASK` frames, the raw-block `S_ROLL.ASK`) |
+| **Display lists** (`.GCP`, `CHARA.PCK`) | ✅ **decoded** — 77 blocks render to PNG with `pd2gcp.py` |
+| **Advanced PD2 bundle** (`PD2DT.IDX` + `.BND`) | ✅ **solved** — 169 members, 74 `.PCK` + 39 `.GCP` + 9 `.ASK` + 6 `.SLD`, carved by `pd2bnd.py` |
 | Palette mechanism | ✅ proven |
 | Embedded 32-byte palettes in `.GCP` / `CHARA.PCK` | ✅ 26 `.GCP` palettes (2 custom) and 27 `CHARA.PCK` entries |
 | Artwork screen palettes | ✅ 48-byte tables ship inside the EXEs (channel order B,R,G); `tools/pal_tables.py` can find them, see [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md) |
 | Colours of a plain `--all` run | ⚠️ **may be wrong** — the fallback is the PC-98 default ramp; see the palette note below |
-| `.GCP` as a raster format | ❌ it is a GDC display list, not a picture |
+| `.GCP` as a raster format | ✅ it is a GRCG display list, and it renders — see [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) |
 | Compressor | ❌ not recovered (it is in `CONVERT.EXE`) |
 
 ---
@@ -60,7 +64,22 @@ python pd2extract.py --all out\disks out\png --palette auto
 
 `--palette auto` applies a known screen palette when the `.PCK`/`.ASK` name gives
 a clue (for example `FACE.PCK` → artwork); unknown names use the PC-98 default.
-Use `--palette-dir DIR` if the game EXEs are outside the input tree.
+Use `--palette-dir DIR` if the game EXEs are outside the input tree. To assign a
+specific `.pal` file to a source such as `M_CLR.PCK`, provide a JSON file with
+`--palette-map`:
+
+```json
+{
+  "M_CLR": "out/palettes/REPORT.EXE_0138b7.pal"
+}
+```
+
+Save this as `palette-map.json` at the project root, then pass it while
+extracting. Palette paths in the JSON are relative to the JSON file's directory:
+
+```powershell
+python pd2extract.py --all out\disks out\png --palette auto --palette-map palette-map.json
+```
 
 For one HDI, pass its path directly, then point `pd2extract.py` at the extracted
 folder:
@@ -90,6 +109,29 @@ python pd2pal.py --list ..\hdi\PD2D
 
 # 5. self-check (writes nothing, only verifies)
 python tools\verify.py --data ..\hdi\PD2D
+
+# 6. the display lists: .GCP files and CHARA.PCK
+python pd2gcp.py --gcp ..\hdi\PD2D\KOGADO.GCP out\kogado
+python pd2gcp.py --pck ..\hdi\PD2D\CHARA.PCK out\chara --entry 0
+python pd2gcp.py --all ..\hdi\PD2D out\display-list
+```
+
+The display lists deserve one more line: PD1's `.GCP` carry no palette of their
+own, and the `CHARA.PCK` portraits are drawn with the shared artwork palette
+rather than the table inside the block, so those two sets want `--pal-exe`:
+
+```powershell
+python pd2gcp.py --all "..\power dolls 1\_unpacked" out\pd1 --pal-exe "..\power dolls 1\_unpacked\PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --pck ..\hdi\PD2D\CHARA.PCK out\chara --pal-exe ..\hdi\PD2D\BRIEFING.EXE:0x234C6
+```
+
+When you do not want to guess which palette belongs to which screen, brute-force
+it: `pd2sweep.py` unpacks everything it finds, collects every palette it can find
+and writes one labelled contact sheet per picture.
+
+```powershell
+python pd2sweep.py --data ..\hdi\PD2D -o out\sweep
+python pd2sweep.py --image ..\hdi\PD2S.HDI -o out\sweep --orders all
 ```
 
 ## Palette: if colours look wrong
@@ -145,7 +187,7 @@ for i, blob in parse_archive("FACE.PCK"):
 
 ```
 python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
-                     [--palette pc98|gray|vivid|auto] [--palette-dir DIR]
+                     [--palette pc98|gray|vivid|auto] [--palette-dir DIR] [--palette-map FILE.json]
                      [--pal FILE.pal]
                      [--pal-exe FILE.EXE:0xOFFSET] [--raw-geom WxH] [--scale N]
 ```
@@ -159,6 +201,7 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 | `--palette vivid` | high-contrast colours |
 | `--palette auto` | choose a known screen palette from filename hints; unknown names use PC-98 default |
 | `--palette-dir DIR` | EXE search directory for `--palette auto` (defaults to the input directory) |
+| `--palette-map FILE.json` | custom source basename or full filename to `.pal` mapping; only with `auto`, relative paths use the JSON directory |
 | `--pal FILE.pal` | your own palette (JASC-PAL, raw 768 bytes, 48 bytes, or text) |
 | `--pal-exe FILE.EXE:0xOFFSET` | use a 48-byte screen palette from an EXE; see the palette note above |
 | `--raw-geom WxH` | geometry for a "raw block" `.ASK`; derived from `decoded_size` by default (`S_ROLL.ASK` → 640x320) |
@@ -169,7 +212,92 @@ For archives a subdirectory per archive is created; file names are
 pictures: 348 `.PCK` entries, 12 `.ASK` frames and the raw-block `S_ROLL.ASK`.
 `--palette auto` chooses a known palette from each `.PCK`/`.ASK` source name;
 without a filename hint it keeps the PC-98 ramp. This is a per-file heuristic,
-not confirmation of the palette used by a particular screen.
+not confirmation of the palette used by a particular screen. `--palette-map`
+defines overrides that take precedence over the heuristic. For example,
+`"M_CLR": "out/palettes/REPORT.EXE_0138b7.pal"` applies that palette to
+`M_CLR.PCK`; you can also use the full source name such as `"M_CLR.PCK"`.
+Name matching is case-insensitive.
+
+To compare every saved palette against one file, use `pd2pal_sweep.py`. It
+searches the palette directory recursively and writes a separate output folder
+for each `.pal` candidate:
+
+```powershell
+python pd2pal_sweep.py ..\hdi\PD2D\FACE.PCK out\palettes out\face-sweep
+```
+
+For a raw-block `.ASK`, pass `--raw-geom WxH` if the size cannot be inferred.
+
+### `pd2gcp.py` — display lists (`.GCP`, `CHARA.PCK`)
+
+```
+python pd2gcp.py (--all DIR | --gcp FILE | --pck FILE [--entry N]) OUTDIR
+                 [--pal FILE.pal] [--pal-exe FILE.EXE:0xOFFSET]
+                 [--full] [--no-xor] [--dump] [--list] [--scale N] [--base N]
+python pd2gcp.py --self-test
+```
+
+`.GCP` is not a raster: it is a command stream for the PC-98 **GRCG** (ports
+`0x7C`/`0x7E`) whose rows are stored as XOR deltas, and it is finished off by a
+row-XOR decode pass. The tool runs the game's loader (`CONVERT.EXE 0x5DE5`), both
+players (`0x5FCD` / `0x63E3`) and the pass, and writes the picture. Geometry is in
+the block header, so no alignment guessing is involved; `CHARA.PCK`'s 27 display
+lists are the 160x240 portraits and PD1's 24 `.GCP` are its full screens.
+Full model: [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md).
+
+| option | effect |
+|---|---|
+| `--all DIR` | every `.GCP` under DIR and every display list in its `.PCK` files |
+| `--gcp` / `--pck` | one file / one archive (`--entry N` for a single entry) |
+| `--pal FILE.pal` | palette for blocks that carry none (all of PD1's `.GCP`) |
+| `--pal-exe FILE.EXE:0xOFFSET` | use one of the 48-byte screen palettes inside an EXE |
+| `--full` | keep the declared `width x height` region instead of cropping to the drawn bytes |
+| `--no-xor` | stop after the display list — this is the raw row-delta mask |
+| `--dump` | also write `<image>.txt`, the decoded command list |
+| `--list` | print a table of the blocks found |
+| `--self-test` | check the model on hand-built blocks, write nothing |
+
+### `pd2sweep.py` — brute-force palette sweep
+
+Palettes are the one thing that cannot be derived from the files alone: the game
+picks a table at run time, and PD1's `.GCP` carry none at all. This tool stops
+guessing and renders everything with everything.
+
+```
+python pd2sweep.py --data DIR  -o OUTDIR [--mode sheets|full|both] [--cell 160]
+                   [--orders engine|all] [--palette-dir DIR]
+                   [--images GLOB] [--palettes GLOB] [--max-palettes N] [--list]
+python pd2sweep.py --image PD2S.HDI -o OUTDIR          # unpack the disk image first
+```
+
+| option | effect |
+|---|---|
+| `--data DIR` / `--image FILE` | an extracted data tree, or a `.HDI`/`.FDI`/`.fdd`/`.d88` to unpack with `tools/img_extract.py` first |
+| `--mode sheets` | **default**: one contact sheet per picture — one cell per palette, labelled, the block's own palette first and marked `*` |
+| `--mode full` / `both` | also write one loose PNG per picture and palette (`full/`) |
+| `--cell` / `--cols` / `--scale` | sheet cell size, cells per row, upscale for `full` |
+| `--orders all` | also try the five other channel permutations of every 48-byte EXE table |
+| `--palette-dir DIR` | also sweep every `.pal` under DIR |
+| `--images` / `--palettes` | glob filters on picture and palette ids (repeatable) |
+| `--max-palettes N` | cap the palettes per sheet (the picture's own palette survives the cap) |
+| `--split-bundles` | with `--data`, also unpack every `.IDX`/`.BND` pair (Advanced PD2 keeps the whole game in one bundle). `--image` does this automatically |
+| `--list` | report the pictures and palettes it found, write nothing |
+
+It sweeps **every** picture kind it can find (raster `.PCK`/`.ASK` entries, raw
+blocks, `.GCP` and `CHARA.PCK` display lists, and the members of an `.IDX`/`.BND`
+bundle) against **every** palette it can find (the packed `+0xB` tables of the data
+files, every 48-byte table inside the executables via `tools/pal_tables.py`, every
+`.pal` you point it at, and the PC-98 default ramp). Output:
+
+```
+OUTDIR/palettes/<NNN>_<id>.pal     every distinct palette, JASC
+OUTDIR/palettes/index.txt          number -> id, source, hex — the sheet labels use it
+OUTDIR/sheets/<picture>.png        the contact sheet
+```
+
+A contact sheet beats loose files here: 400 pictures x 60 palettes is a quarter of
+a million PNGs, while a sheet is one file per picture and one glance per palette.
+Cells are labelled `*N id`, `*` marking the palette the block itself carries.
 
 ### `pd2pal.py` — palettes
 
@@ -226,10 +354,32 @@ offset 4. Every `.SLD` and also `S_ROLL.ASK` are built this way. Detection lives
 in `pd2img.is_raw_block`, so `pd2extract.py` renders such a file as a picture
 too (geometry from `decoded_size`, or `--raw-geom WxH`).
 
+### `pd2bnd.py` — the `.IDX` + `.BND` bundle (Advanced PD2)
+
+Advanced PD2 ships none of the game's data files loose: it ships `PD2DT.BND`
+(7.2 MB of concatenated payload) next to `PD2DT.IDX`, its table of contents.
+
+```
+python pd2bnd.py --list PD2_3/PD2DT.IDX
+python pd2bnd.py --idx PD2_3/PD2DT.IDX --bnd PD2_3/PD2DT.BND -o out/apd2
+python pd2bnd.py --auto extracted_dir -o out/bundles
+python pd2bnd.py --self-test
+```
+
+`.IDX` is a flat array of 24-byte records — `name[16]`, `size` u32, `offset` u32 —
+and `.BND` is the raw concatenation they describe. 169 members, no compression, no
+padding: `offset[k] + size[k] == offset[k+1]` for every k and the last member ends
+exactly on the bundle's last byte, so the table validates itself. The payload is
+74 `.PCK`, 39 `.GCP`, 9 `.ASK`, 6 `.SLD` plus drivers, MIDI and the installer's
+data — including Advanced-only screens (`SINGLE`, `GAMEOVER`, `M_FAIL`, `AD_END`,
+`APD_STF*`, `KOKUPI*`) that no other release has.
+Details: [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.md).
+
 ### `tools/verify.py` — self-check
 
-Writes nothing; it verifies the claims made in [`docs/FORMAT.md`](docs/FORMAT.md)
-and [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md):
+Writes nothing; it verifies the claims made in [`docs/FORMAT.md`](docs/FORMAT.md),
+[`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md) and
+[`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md):
 
 1. the decoder sits at **exactly the documented addresses** in 7 HDI binaries
    and 8 floppy-release binaries (accounting for the two prologue forms);
@@ -245,7 +395,11 @@ and [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md):
    non-default;
 6. the four known screen palettes live inside the EXEs at the documented offsets
    (channel order B,R,G);
-7. `S_ROLL.ASK` is a raw block and its geometry derives as 640x320.
+7. `S_ROLL.ASK` is a raw block and its geometry derives as 640x320;
+8. every display list (the 26 `.GCP` in the data dir plus 27 `CHARA.PCK` entries)
+   reaches its closing `0x7F` exactly when the block runs out of bytes;
+9. the geometry in a display-list header for four known blocks (`KOGADO.GCP`
+   24x56, `K_BLANC1.GCP` 48x112, `PD2TITLE.GCP` 80x400, `USAGI.GCP` 10x80).
 
 ```
 python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked"
@@ -285,9 +439,10 @@ get noise.
 | `.ASK` | `u32 decoded_size; u16 x,y,w,h` | 12 | yes (`S_ROLL.ASK` is a raw block instead) |
 | `.PCK` | archive of entries, each like `.ASK` | 12 | mixed: some entries are display lists |
 | `.SLD` | `u32 decoded_size` | 4 | no (data) |
-| `.GCP` | header + **32-byte packed palette** + display list | `0x2B` | **no** — GDC commands |
+| `.GCP` | header + optional **32-byte packed palette** + display list | `9 + hdr[8]` (`0x2B` when the palette is present) | not a raster, but **yes, it renders** — GRCG display list, see `pd2gcp.py` |
 
-Full breakdown: [`docs/FORMAT.md`](docs/FORMAT.md).
+Full breakdown: [`docs/FORMAT.md`](docs/FORMAT.md) for the containers and
+[`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) for `.GCP`.
 
 ---
 
@@ -298,9 +453,9 @@ Full breakdown: [`docs/FORMAT.md`](docs/FORMAT.md).
 | [`docs/FORMAT.md`](docs/FORMAT.md) | **deep dive:** all containers, the exact codec algorithm, state, bit reader, tokens, the two pitfalls, output layout, proof of correctness |
 | [`docs/PALETTE.md`](docs/PALETTE.md) | palette basics: how to choose a screen palette, what the 32-byte `.GCP` ramp is, and how to render with the right colours |
 | [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.md) | evidence and details for the 48-byte screen-palette tables inside the EXEs, channel order B,R,G, and how to find/extract them |
-| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.md) | Advanced PD2: the BPB-less `.fdd` layout, the `BIGFILE` container, and why this release is a patch over PD2 |
-| [`docs/PD1.md`](docs/PD1.md) | Power Dolls 1: why only 6 pictures convert — the artwork lives in `.GCP` display lists (the same format as PD2's `CHARA.PCK`) |
-| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) | display lists: the player routine (10 binaries, both games), the stream grammar, what is left |
+| [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.md) | Advanced PD2: the BPB-less `.fdd` layout, the `PD2DT.IDX` + `.BND` bundle (169 members, solved), and why this release is a patch over PD2 |
+| [`docs/PD1.md`](docs/PD1.md) | Power Dolls 1: six `.ASK` logos plus 24 `.GCP` display lists — its portraits and screens |
+| [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) | display lists solved: the GRCG model, the loader and both players, the command stream, the row-XOR decode pass, palettes, validation |
 | [`docs/LOAD_ORDER.md`](docs/LOAD_ORDER.md) | HDI boot/load chain, `EXEC` map, decoder locations in 15 binaries, how to resolve DGROUP |
 | [`docs/PITFALLS.md`](docs/PITFALLS.md) | the traps that derailed earlier investigations (so you do not repeat them) |
 | [`docs/LIVE_PALETTE_DUMP.uk.md`](docs/LIVE_PALETTE_DUMP.uk.md) | (Ukrainian) live palette capture from DOSBox-X: the MCP tools (`dosbox_mcp_palette.py`, `mcp_probe.py`, `mcp_poll_palette.py`, `mcp_dump_vram.py`), `pal_from_shot.py`, and the closed "dumper inside the guest" experiment |
@@ -315,13 +470,18 @@ Ukrainian originals: [`README.uk.md`](README.uk.md), `docs/*.uk.md`.
 ## Limitations
 
 * **Palette:** raster entries usually lack a screen palette; without `--pal` or
-  `--pal-exe`, the extractor uses the PC-98 default. `.GCP` is a GDC display
-  list. See the palette note above.
+  `--pal-exe`, the extractor uses the PC-98 default. Display lists are the same
+  story: the `.GCP` files carry a 32-byte table but PD1's carry none at all, and
+  `CHARA.PCK`'s portraits are drawn with the artwork palette rather than the
+  table inside the block. See the palette note above and
+  [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.md) §6.
 * **The compressor** was not recovered; it is in `CONVERT.EXE` (look next to
   the decoder at image `0x54E6`).
 * Several archives contain no pictures at all (`MES`, `WMES`, `NAMES`, `MOJI`,
   `NPC`, `MUNIT`, `TUNIT`, `MAP_CHG`, `MISSON*D`, `SCEN_MIS`, `YAOUPD1`,
-  `CHARA`, `ANIME`) — they hold text or display lists.
+  `CHARA`, `ANIME`) — they hold text or display lists. Of these, the display
+  lists are decoded (`pd2gcp.py`: 27 of `CHARA.PCK`'s 38 entries); the rest is
+  still unidentified.
 
 ---
 
