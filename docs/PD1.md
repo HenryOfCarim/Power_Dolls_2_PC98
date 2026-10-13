@@ -14,7 +14,7 @@ list format PD2 keeps in `CHARA.PCK`, it is decoded now, and all 24 files conver
 to PNG:
 
 ```
-python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 Eight of them are 160x240 character portraits (`CHARA04…CHARA20`), sixteen are
@@ -49,11 +49,21 @@ carry no palette at all, so a render needs `--pal` / `--pal-exe`:
 
 ```
 python pd2gcp.py --gcp "power dolls 1/_unpacked/CHARA04.GCP" out \
-                 --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+                 --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 `0xEDF1` is the artwork palette (skin tones first); `pd2pal_sweep.py` and
 `pd2pal.py --suggest` help to pick another one.
+
+**The `:G,R,B` suffix matters.** PD1's executables store their 48-byte tables in a
+different byte order from PD2's: the palettes captured from the running game match
+PD1's tables only when an entry is read as `(byte[3i+1], byte[3i+0], byte[3i+2])` —
+11 of the 20 frames dumped from DOSBox-X match a PREMIUM table that way and none
+match the other order, which is why the default (`B,R,G`, correct for PD2) turns
+PD1 portraits magenta and green. `tools/verify.py --pd1` pins it: `PREMIUM.EXE
+0xEDF1` and PD2's `STARTUP.EXE 0x9311` are the same 16 colours with the first and
+third bytes exchanged, so each game needs its own reading. See
+[`PALETTE.md`](PALETTE.md) §2.
 
 ## 4. What this means for PD2
 

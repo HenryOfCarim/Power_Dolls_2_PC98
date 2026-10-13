@@ -18,7 +18,7 @@ renders as a picture; `pd2gcp.py` is the extractor.
 python pd2gcp.py --gcp hdi/PD2D/KOGADO.GCP out
 python pd2gcp.py --pck hdi/PD2D/CHARA.PCK out --entry 0
 python pd2gcp.py --all hdi/PD2D out
-python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 ![Power Dolls 2 title screen, rendered from PD2TITLE.GCP](img/gcp_pd2title.png)
@@ -42,7 +42,7 @@ python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_u
 +9..10  a 16-bit VRAM offset; the loader uses it instead of the caller's pen
         when the caller passes a pen >= 0x7D00
 +0xB..  the 16-colour packed palette when +8 >= 0x22:
-        byte[2i] = (index << 4) | R,  byte[2i+1] = (G << 4) | B
+        byte[2i] = (index << 4) | G,  byte[2i+1] = (R << 4) | B
 stream  block + 9 + block[8]
 ```
 
@@ -175,7 +175,9 @@ they do not need one to store the *mask*, and the screens' colours come from the
 ## 6. Palettes
 
 The 32-byte table at `+0xB` is the engine's packed form
-(`byte[2i] = (index << 4) | R`, `byte[2i+1] = (G << 4) | B`). It is
+(`byte[2i] = (index << 4) | G`, `byte[2i+1] = (R << 4) | B` — the three colour
+ports are `0xAA` = green, `0xAC` = red, `0xAE` = blue, see
+[`PALETTE.md`](PALETTE.md) §1). It is
 self-describing: the high nibble of the second byte is the index it belongs to, so
 `pd2pal.palette_from_packed()` rejects anything that is not one of these tables.
 
@@ -183,8 +185,9 @@ Carrying a table is not the same as *being drawn with* it, and the two cases
 differ:
 
 * **PD1 `.GCP`** have `+8 == 0`, i.e. no table at all. The screens' colours come
-  from the 48-byte banks inside the EXEs; `--pal-exe PREMIUM.EXE:0xEDF1` is a good
-  starting point for the portraits.
+  from the 48-byte banks inside the EXEs; `--pal-exe PREMIUM.EXE:0xEDF1:G,R,B` is
+  a good starting point for the portraits (the `:G,R,B` is PD1's byte order - see
+  [`PALETTE.md`](PALETTE.md) §1).
 * **PD2 `.GCP`** carry a table and most of them carry the default ramp
   (`HARDY.GCP`, `KOGADO.GCP` are the two custom ones). The embedded table is what
   `pd2gcp.py` uses by default.

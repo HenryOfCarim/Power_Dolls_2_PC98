@@ -18,7 +18,7 @@ Display-list'и **декодуються**. Кожен блок із гри до
 python pd2gcp.py --gcp hdi/PD2D/KOGADO.GCP out
 python pd2gcp.py --pck hdi/PD2D/CHARA.PCK out --entry 0
 python pd2gcp.py --all hdi/PD2D out
-python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 ![Титульний екран Power Dolls 2, відрендерений з PD2TITLE.GCP](img/gcp_pd2title.png)
@@ -42,7 +42,7 @@ python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_u
 +9..10  16-бітний зсув у VRAM; завантажувач бере його замість переданого
         пера, коли пер >= 0x7D00
 +0xB..  16-колірна пакована палітра, коли +8 >= 0x22:
-        byte[2i] = (index << 4) | R,  byte[2i+1] = (G << 4) | B
+        byte[2i] = (index << 4) | G,  byte[2i+1] = (R << 4) | B
 потік   блок + 9 + блок[8]
 ```
 
@@ -175,15 +175,18 @@ for (r = 0; r < height - 1; r++)
 ## 6. Палітри
 
 32-байтова таблиця на `+0xB` — це пакована форма рутини
-(`byte[2i] = (index << 4) | R`, `byte[2i+1] = (G << 4) | B`). Вона самooписова:
+(`byte[2i] = (index << 4) | G`, `byte[2i+1] = (R << 4) | B`; три кольорові порти
+це `0xAA` = зелений, `0xAC` = червоний, `0xAE` = синій, див.
+[`PALETTE.md`](PALETTE.uk.md) §1). Вона самooписова:
 старший напівбайт другого байта — це індекс, якому він належить, тож
 `pd2pal.palette_from_packed()` відкидає все, що не є такою таблицею.
 
 Мати таблицю — не те саме, що *бути нею намальованим*, і тут два різні випадки:
 
 * **`.GCP` PD1** мають `+8 == 0`, тобто таблиці немає взагалі. Кольори екранів
-  беруться з 48-байтових банків усередині EXE; `--pal-exe PREMIUM.EXE:0xEDF1` —
-  добра відправна точка для портретів.
+  беруться з 48-байтових банків усередині EXE;
+  `--pal-exe PREMIUM.EXE:0xEDF1:G,R,B` — добра відправна точка для портретів
+  (`:G,R,B` — це порядок байтів PD1, див. [`PALETTE.md`](PALETTE.uk.md) §1).
 * **`.GCP` PD2** таблицю несуть, і більшість несе стандартну гаму (`HARDY.GCP`,
   `KOGADO.GCP` — дві власні). Саме вбудовану таблицю `pd2gcp.py` бере за
   замовчуванням.

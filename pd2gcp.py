@@ -32,7 +32,9 @@ Block layout
     +9..10  an optional 16-bit VRAM offset; the loader uses it instead of the
             caller's pen when the caller passes a pen >= 0x7D00
     +0xB..  the 16-colour packed palette, when +8 >= 0x22:
-            byte[2i] = (index << 4) | R, byte[2i+1] = (G << 4) | B
+            byte[2i] = (index << 4) | G, byte[2i+1] = (R << 4) | B
+            (the ports are 0xAA = green, 0xAC = red, 0xAE = blue - see
+            pd2pal.palette_from_packed and docs/PALETTE.md section 1)
     stream  block + 9 + block[8]
 
 Command stream (the value the CPU writes to VRAM is irrelevant - the GRCG
@@ -77,7 +79,8 @@ import struct
 import sys
 
 from pd2img import parse_archive
-from pd2pal import DEFAULT_PALETTE, palette_from_exe_table, palette_from_packed, read_pal
+from pd2pal import (DEFAULT_PALETTE, palette_from_exe_table, palette_from_packed,
+                    parse_exe_spec, read_pal)
 
 __all__ = ["parse_header", "is_display_list", "decode", "indices", "render",
            "disassemble", "tile_order", "GRCG_PLANES"]
@@ -384,15 +387,13 @@ def _load_palette(args):
     if args.pal:
         return read_pal(args.pal)
     if args.pal_exe:
-        spec = args.pal_exe
-        for sep in ("@", ":"):
-            if sep in spec:
-                path, off = spec.rsplit(sep, 1)
-                break
-        else:
-            raise SystemExit("--pal-exe wants FILE.EXE:0xOFFSET")
+        path, off, order = parse_exe_spec(args.pal_exe)
+        if off is None:
+            raise SystemExit("--pal-exe wants FILE.EXE:0xOFFSET[:ORDER] "
+                             "(the order is B,R,G for Power Dolls 2 and G,R,B "
+                             "for PD1's PREMIUM.EXE / STARTUP.EXE)")
         blob = open(path, "rb").read()
-        pal, _order = palette_from_exe_table(blob, int(off, 0))
+        pal, _label = palette_from_exe_table(blob, off, order)
         return pal
     return None
 

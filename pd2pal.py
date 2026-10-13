@@ -2,25 +2,37 @@
 
 How the game sets the palette
 -----------------------------
-`BRIEFING.EXE` image `0x10A59` (identical code exists in every graphics EXE):
+`CONVERT.EXE` image `0x5F87` (identical code exists in every graphics EXE):
 
     for (i = 0; i < 16; i++) {
         b0 = es:[bx + 0x0C];            /* bx = struct + i*2                  */
         b1 = es:[bx + 0x0B];
         out(0xA8, b0 >> 4);             /* palette index                      */
-        out(0xAA, b0 & 15);             /* R                                  */
-        out(0xAC, b1 >> 4);             /* G                                  */
-        out(0xAE, b1 & 15);             /* B                                  */
+        out(0xAA, b0 & 15);             /* GREEN  - see the note below        */
+        out(0xAC, b1 >> 4);             /* RED                                */
+        out(0xAE, b1 & 15);             /* BLUE                               */
     }
 
-So a palette is 32 bytes:
-    byte[2i] = (index << 4) | R
-    byte[2i+1] =  G << 4    | B
+On the PC-98 the three colour ports are **0xAA = green, 0xAC = red, 0xAE = blue**
+(DOSBox-X `src/hardware/vga_pc98_gdc.cpp`: the 0xAA write sets `dac.rgb[].green`
+and `pc98_pal_analog[+0]`, 0xAC sets `.red` / `[+1]`, 0xAE sets `.blue` / `[+2]`,
+and the array is documented `/* G R B */`).  So a packed palette is:
+
+    byte[2i]   = (index << 4) | GREEN
+    byte[2i+1] =  RED << 4    | BLUE
+
+Reading it as `(b0 & 15, b1 >> 4, b1 & 15)` = (R, G, B) - which is what this
+module did until the order was checked against the hardware - swaps red and
+green.  The check that caught it: the game's own 16-colour ramp decodes to
+`000 00f f00 f0f 0f0 0ff ff0 fff 777 00a a00 a0a 0a0 0aa aa0 aaa`, which is
+exactly the PC-98 hardware reset ramp (`G = i&4, R = i&2, B = i&1`), and the
+"artwork" packed tables in the Advanced PD2 bundle decode to the same 16 colours
+as the known-good 48-byte `BRIEFING.EXE 0x234C6` table.
 
 Where that 32-byte table lives
 ------------------------------
 * every `.GCP` file, at offset **0xB** (26/26 validate).
-  Most carry the standard PC-98 default palette; `HARDY.GCP` and `KOGADO.GCP`
+  Most carry the standard PC-98 default ramp; `HARDY.GCP` and `KOGADO.GCP`
   carry custom artwork palettes.
 * 27 entries of `CHARA.PCK`, likewise at offset 0xB.
 
@@ -28,16 +40,28 @@ The other palette source: 48-byte tables inside the EXEs
 -------------------------------------------------------
 The artwork screens do not carry a palette next to their pixels; the game ships
 banks of 48-byte palettes **inside its executables** (stride 0x60/0xC0) and hands
-the right one to the writer routine at run time.  The channels are stored as
-**(B, R, G)**, i.e. an entry is `(byte[3i+1], byte[3i+2], byte[3i+0])` - reading
-such a table as plain RGB is why early searches concluded "no palette in the
-files at all" (they also compared against reference colours that were attached
-to the wrong indices).
+the right one to the writer routine at run time.
 
-    TACTICS.EXE  0x1ECA4   gameplay / tactics screen
-    STARTUP.EXE  0x9311    startup screen
-    PD2SHELL.EXE 0x98E6    shell / menu
+The two games store those tables in **different byte orders**, and the palettes
+captured from the running games decide which:
+
+* Power Dolls 2 (`BRIEFING`, `STARTUP`, `PD2SHELL`, `TACTICS`, ...): **(B, R, G)**,
+  i.e. an entry is `(byte[3i+1], byte[3i+2], byte[3i+0])` - this module's default;
+* Power Dolls 1 (`PREMIUM.EXE`, `STARTUP.EXE`): **(G, R, B)**, i.e. an entry is
+  `(byte[3i+1], byte[3i+0], byte[3i+2])`.  Eleven frames dumped from DOSBox-X
+  match a table in the PD1 executables under this order and none under the
+  default one, and the invariant that makes it checkable without a capture is
+  that `PREMIUM.EXE 0xEDF1` and PD2's `STARTUP.EXE 0x9311` are the *same* 16
+  colours with the first and third bytes exchanged (`tools/verify.py` [10]).
+
+Pass the order as a third field of the spec - `--exe FILE.EXE:0xEDF1:G,R,B`; the
+`--pal-exe` options of the other tools accept the same form.
+
+    TACTICS.EXE  0x1ECA4   gameplay / tactics screen            (PD2, B,R,G)
+    STARTUP.EXE  0x9311    startup screen                        (PD2, B,R,G)
+    PD2SHELL.EXE 0x98E6    shell / menu                          (PD2, B,R,G)
     BRIEFING.EXE 0x234C6   shared artwork palette (also CONVERT/OPENING/REPORT/TACTICS)
+    PREMIUM.EXE  0xEDF1    PD1 artwork / startup palette         (PD1, G,R,B)
 
 `--exe FILE.EXE` lists the tables in a binary, `--exe FILE.EXE:0xOFFSET` dumps
 one.  Full inventory: `tools/pal_tables.py`, docs/PALETTE_TABLES.md.
@@ -80,9 +104,13 @@ except ImportError:                       # pragma: no cover - tools/ ships with
 EXE_ORDERS = (('B,R,G', (1, 2, 0)), ('R,G,B', (0, 1, 2)), ('G,R,B', (1, 0, 2)),
               ('B,G,R', (2, 1, 0)), ('R,B,G', (0, 2, 1)), ('G,B,R', (2, 0, 1)))
 
-DEFAULT_PALETTE = [(0,0,0),(0,0,15),(0,15,0),(0,15,15),(15,0,0),(15,0,15),(15,15,0),(15,15,15),
-                   (7,7,7),(0,0,10),(0,10,0),(0,10,10),(10,0,0),(10,0,10),(10,10,0),(10,10,10)]
-"""The palette stored in 24 of the 26 .GCP files (offset 0xB)."""
+DEFAULT_PALETTE = [(0,0,0),(0,0,15),(15,0,0),(15,0,15),(0,15,0),(0,15,15),(15,15,0),(15,15,15),
+                   (7,7,7),(0,0,10),(10,0,0),(10,0,10),(0,10,0),(0,10,10),(10,10,0),(10,10,10)]
+"""The 32-byte packed ramp at offset 0xB of 24 of the 26 `.GCP` files.
+
+It is the PC-98 hardware ramp: entry `i` is `G = i&4, R = i&2, B = i&1`, so
+1 = blue, 2 = red, 3 = magenta, 4 = green.  This is what the game stores and
+what the ports `0xA8/0xAA/0xAC/0xAE` end up writing."""
 
 SCREEN_ROLES = {
     'artwork': 'artwork / portraits / equipment',
@@ -144,7 +172,11 @@ ASSET_ROLE_TOKENS = {
 
 # ---------------------------------------------------------------- packed table
 def palette_from_packed(blob, base=0):
-    """32-byte packed palette at base+0x0B. Returns list of 16 (R,G,B) or None."""
+    """32-byte packed palette at base+0x0B. Returns list of 16 (R,G,B) or None.
+
+    Layout: `byte[2i] = (index << 4) | G`, `byte[2i+1] = (R << 4) | B` - the
+    ports are 0xAA = green, 0xAC = red, 0xAE = blue (see the module docstring).
+    """
     if base + 0x0B + 32 > len(blob):
         return None
     out = []
@@ -153,33 +185,51 @@ def palette_from_packed(blob, base=0):
         b1 = blob[base + 0x0B + 2*i]
         if (b0 >> 4) != i:
             return None
-        out.append((b0 & 15, b1 >> 4, b1 & 15))
+        out.append((b1 >> 4, b0 & 15, b1 & 15))
     return out
 
 
 def palette_to_packed(pal):
+    """Inverse of `palette_from_packed` - note the byte order: +0xB holds the
+    red/blue byte and +0xC the index/green one (see the writer above)."""
     out = bytearray()
     for i, (r, g, b) in enumerate(pal):
-        out.append(((i & 15) << 4) | (r & 15))
-        out.append(((g & 15) << 4) | (b & 15))
+        out.append(((r & 15) << 4) | (b & 15))
+        out.append(((i & 15) << 4) | (g & 15))
     return bytes(out)
 
 
 # ------------------------------------------------------------- 48-byte EXE tables
 def parse_exe_spec(spec):
-    """'FILE.EXE:0x234C6' / 'FILE.EXE@0x234C6' -> (path, offset); bare path -> (path, None).
+    """`FILE.EXE:0x234C6` / `FILE.EXE@0x234C6` -> (path, offset, order).
 
-    The last ':' or '@' wins, so a Windows drive letter is not mistaken for one.
+    The channel order may be appended as a third field - `FILE.EXE:0xEDF1:G,R,B`.
+    That matters because the two games store their 48-byte tables in different
+    byte orders: Power Dolls 2 builds are `B,R,G` (this module's default, matched
+    against live dumps and corroborated by the packed tables of the Advanced PD2
+    bundle), while Power Dolls 1's `PREMIUM.EXE` and `STARTUP.EXE` are `G,R,B`
+    (11 frames captured from the running game match that reading and no other).
+    A bare path gives `(path, None, None)`.
     """
+    order = None
+    body = spec
+    for name, _perm in EXE_ORDERS:
+        for sep in ('@', ':'):
+            if body.endswith(sep + name):
+                body = body[:-len(sep) - len(name)]
+                order = name
+                break
+        if order:
+            break
     for sep in ('@', ':'):
-        if sep in spec:
-            path, _, off = spec.rpartition(sep)
+        if sep in body:
+            path, _, off = body.rpartition(sep)
             if path and off:
                 try:
-                    return path, int(off, 0)
+                    return path, int(off, 0), order
                 except ValueError:
                     pass
-    return spec, None
+    return body, None, order
 
 
 def palette_from_exe_table(blob, offset, order=None):
@@ -570,7 +620,7 @@ def main():
         if pal is None:
             sys.exit(f"{a.pck}#{a.entry}: no packed palette at offset 0xB")
     elif a.exe:
-        path, off = parse_exe_spec(a.exe)
+        path, off, order = parse_exe_spec(a.exe)
         try:
             blob = open(path, 'rb').read()
         except OSError as e:
@@ -585,11 +635,11 @@ def main():
             print(f"# {found} palette table(s) in {path}")
             sys.exit(0)
         try:
-            pal, order = palette_from_exe_table(blob, off)
+            pal, label = palette_from_exe_table(blob, off, order)
         except ValueError as e:
             sys.exit(f"{path}: {e}")
-        print(f"# {path} @ {off:#x}, channel order {order}")
-        if order.endswith('(unverified)'):
+        print(f"# {path} @ {off:#x}, channel order {label}")
+        if label.endswith('(unverified)'):
             print("# WARNING: this does not look like a palette (first entry is not "
                   "black or fewer than 10 distinct colours)")
     elif a.shot:

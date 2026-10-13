@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 from pd2img import (decode_lzss, parse_archive, is_image_entry, is_raw_block,
                     raw_geometry)
-from pd2pal import (palette_from_packed, palette_from_exe_table, DEFAULT_PALETTE)
+from pd2pal import (palette_from_packed, palette_to_packed, palette_from_exe_table,
+                    DEFAULT_PALETTE)
 from pd2gcp import (DisplayListError, decode as decode_displaylist, is_display_list,
                     parse_header)
 
@@ -244,17 +245,39 @@ def verify_palettes(data_root):
     print("\n[5] palettes: 32-byte packed table at offset 0xB of every .GCP")
     gcp = [f for f in sorted(os.listdir(data_root)) if f.upper().endswith('.GCP')]
     default = tuple(tuple(c) for c in DEFAULT_PALETTE)
-    valid, custom = 0, []
+    valid, custom, roundtrip, ramp = 0, [], 0, 0
     for f in gcp:
-        pal = palette_from_packed(open(os.path.join(data_root, f), 'rb').read())
+        blob = open(os.path.join(data_root, f), 'rb').read()
+        pal = palette_from_packed(blob)
         if pal:
             valid += 1
-            if tuple(tuple(c) for c in pal) != default:
+            if palette_to_packed(pal) == blob[0x0B:0x0B + 32]:
+                roundtrip += 1
+            if tuple(tuple(c) for c in pal) == default:
+                ramp += 1
+            elif tuple(tuple(c) for c in pal) != default:
                 custom.append(f)
     check(len(gcp) == EXPECT_GCP, f"{len(gcp)} .GCP files (expected {EXPECT_GCP})")
     check(valid == len(gcp), f"{valid}/{len(gcp)} have a valid packed palette at 0xB")
     check(len(custom) == EXPECT_GCP_CUSTOM,
           f"{len(custom)} carry a non-default palette: {custom}")
+
+    # The packed channel order is pinned here, because getting it wrong swaps red
+    # and green in every packed palette and only shows up as a colour cast:
+    #   * 0xAA = green, 0xAC = red, 0xAE = blue (DOSBox-X vga_pc98_gdc.cpp),
+    #     so byte[2i] = (index<<4)|G and byte[2i+1] = (R<<4)|B;
+    #   * the game's own ramp must therefore come out as the PC-98 hardware ramp
+    #     (entry i = G:i&4, R:i&2, B:i&1 -> 1 = blue, 2 = red, 4 = green).
+    hardware = [(15 if i & 2 else 0, 15 if i & 4 else 0, 15 if i & 1 else 0)
+                for i in range(16)]
+    check(roundtrip == len(gcp),
+          f"{roundtrip}/{len(gcp)} packed palettes re-encode byte-exactly "
+          f"(the decode is the writer's inverse)")
+    check([tuple(c) for c in DEFAULT_PALETTE][:8] == hardware[:8],
+          "the default ramp decodes to the PC-98 hardware ramp "
+          "(1 = blue, 2 = red, 3 = magenta, 4 = green)")
+    check(ramp == valid - len(custom),
+          f"{ramp} of {valid} .GCP carry that ramp")
 
 
 def verify_exe_palettes(data_root):
@@ -356,12 +379,73 @@ def verify_display_lists(data_root):
               f"(expected {h} x {w})")
 
 
+def verify_pd1(root, pd2_root):
+    """Power Dolls 1: display lists, and the 48-byte tables in the other order."""
+    print("\n[10] Power Dolls 1: display lists and the 48-byte table order")
+    gcp = [f for f in sorted(os.listdir(root)) if f.upper().endswith('.GCP')]
+    if not gcp:
+        notes.append(f"{root}: no .GCP files - PD1 checks skipped")
+        return
+    problems = 0
+    for f in gcp:
+        blob = open(os.path.join(root, f), 'rb').read()
+        if not is_display_list(blob):
+            problems += 1
+            continue
+        try:
+            res = decode_displaylist(blob)
+        except DisplayListError as e:
+            problems += 1
+            print(f"        {f}: {e}")
+            continue
+        if res['consumed'] != res['stream']:
+            problems += 1
+    check(problems == 0, f"{len(gcp)} PD1 .GCP files decode as display lists, "
+                         f"streams consumed")
+
+    # The two games store the same screen palettes in different byte orders, and
+    # the captured frames of the running game decide which: PD1's tables match
+    # only when read as G,R,B (11/11 frames that match any table at all), PD2's
+    # only as B,R,G.  The invariant that pins PD1 without a capture is that its
+    # copy of the startup palette equals PD2's under the respective orders.
+    pre = os.path.join(root, 'PREMIUM.EXE')
+    sta = os.path.join(pd2_root, 'STARTUP.EXE')
+    if not (os.path.isfile(pre) and os.path.isfile(sta)):
+        notes.append("PREMIUM.EXE or STARTUP.EXE missing - the PD1 channel-order "
+                     "cross-check was skipped")
+        return
+    pd2_blob = open(sta, 'rb').read()
+    want, label = palette_from_exe_table(pd2_blob, 0x9311)
+    blob = open(pre, 'rb').read()
+    hits = []
+    try:
+        import pal_tables
+        windows = [off for off, _tri in pal_tables.tables_in(blob, (0, 1, 2),
+                                                             strict=False)]
+    except ImportError:
+        windows = range(0, len(blob) - 48)
+    for off in windows:
+        try:
+            got, _ = palette_from_exe_table(blob, off, order='G,R,B')
+        except ValueError:
+            continue
+        if got == want:
+            hits.append(off)
+    check(bool(hits),
+          f"PREMIUM.EXE carries the PD2 startup palette ({label}) at "
+          f"{[hex(h) for h in hits][:3]} when read as G,R,B"
+          if hits else "PREMIUM.EXE does not hold the PD2 startup palette in "
+                       "the G,R,B order")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', default=os.path.join('..', 'hdi', 'PD2D'),
                     help='directory with the game data files (PD2D)')
     ap.add_argument('--floppy', default=None,
                     help='root of the floppy releases, to also check those binaries')
+    ap.add_argument('--pd1', default=None,
+                    help='unpacked Power Dolls 1 data dir, for the PD1 checks')
     a = ap.parse_args()
     data_root = os.path.abspath(a.data)
     if not os.path.isdir(data_root):
@@ -377,6 +461,12 @@ def main():
     verify_exe_palettes(data_root)
     verify_raw_block(data_root)
     verify_display_lists(data_root)
+    if a.pd1:
+        pd1_root = os.path.abspath(a.pd1)
+        if os.path.isdir(pd1_root):
+            verify_pd1(pd1_root, data_root)
+        else:
+            notes.append(f"PD1 directory not found: {pd1_root}")
 
     print()
     for n in notes:

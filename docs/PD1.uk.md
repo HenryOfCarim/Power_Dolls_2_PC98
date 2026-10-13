@@ -14,7 +14,7 @@ display-list'ів, який PD2 тримає в `CHARA.PCK`. Він декоду
 конвертуються в PNG:
 
 ```
-python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 Вісім із них — портрети персонажів 160x240 (`CHARA04…CHARA20`), шістнадцять —
@@ -49,11 +49,21 @@ python pd2gcp.py --all "power dolls 1/_unpacked" out --pal-exe "power dolls 1/_u
 
 ```
 python pd2gcp.py --gcp "power dolls 1/_unpacked/CHARA04.GCP" out \
-                 --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1"
+                 --pal-exe "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B"
 ```
 
 `0xEDF1` — палітра малюнків (першими йдуть тілесні тони); `pd2pal_sweep.py` і
 `pd2pal.py --suggest` допоможуть обрати іншу.
+
+**Суфікс `:G,R,B` важливий.** EXE-файли PD1 зберігають свої 48-байтові таблиці в
+іншому порядку байтів, ніж PD2: палітри, зняті з живої гри, збігаються з
+таблицями PD1 лише коли запис читається як `(byte[3i+1], byte[3i+0], byte[3i+2])`
+— 11 із 20 кадрів, знятих із DOSBox-X, збігаються з таблицею з `PREMIUM.EXE` саме
+так, і жоден не збігається в іншому порядку. Саме тому типовий порядок (`B,R,G`,
+правильний для PD2) робить портрети PD1 маджентовими та зеленими.
+`tools/verify.py --pd1` це фіксує: `PREMIUM.EXE 0xEDF1` і `STARTUP.EXE 0x9311` у
+PD2 — ті самі 16 кольорів із переставленими першим і третім байтами, тож кожна
+гра потребує свого читання. Див. [`PALETTE.md`](PALETTE.uk.md) §2.
 
 ## 4. Що це означає для PD2
 

@@ -25,8 +25,17 @@ stored table **16/16**.
 
 | cause | how it shows up |
 |---|---|
-| **Channel order.** The tables are stored as **(B, R, G)**: an entry is `(byte[3i+1], byte[3i+2], byte[3i+0])`. Earlier searches only tried `rgb`/`grb`/`bgr` — plain component swaps, which never produce a cyclic rotation | read as `rgb` a table scores 6/16, read as `gbr` it scores **16/16** |
+| **Channel order.** In Power Dolls 2 the tables are stored as **(B, R, G)**: an entry is `(byte[3i+1], byte[3i+2], byte[3i+0])`. Earlier searches only tried `rgb`/`grb`/`bgr` — plain component swaps, which never produce a cyclic rotation | read as `rgb` a table scores 6/16, read as `gbr` it scores **16/16** |
 | **A reference palette with permuted indices.** The "16 colours measured from a screenshot of the equip screen" hold the same colour *set* as the real palette but attach them to **different entry numbers** | identical multisets, index map `1→7 2→8 3→9 …`; element-wise comparison could never match |
+
+> **Power Dolls 1 is the other way round.** Its `PREMIUM.EXE` / `STARTUP.EXE`
+> store the same kind of table as **(G, R, B)** — `(byte[3i+1], byte[3i+0],
+> byte[3i+2])` — which the frames dumped from the running game prove (11 of 20
+> match a PD1 table under `G,R,B` and none under `B,R,G`; `PREMIUM.EXE 0xEDF1`
+> and PD2's `STARTUP.EXE 0x9311` are the same 16 colours with the first and third
+> bytes exchanged). Pass the order explicitly to the tools:
+> `--pal-exe "PREMIUM.EXE:0xEDF1:G,R,B"`, `pd2pal.py --exe "...:G,R,B"`. See
+> [`PALETTE.md`](PALETTE.md) §1.
 
 A third factor is the **fade ladder**: the game dims palettes at run time
 (`scale = k/16`), so a base table must be searched for across that ladder,

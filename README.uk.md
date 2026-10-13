@@ -42,7 +42,7 @@ Products, PC-98, 1994).
 | **Збірка Advanced PD2** (`PD2DT.IDX` + `.BND`) | ✅ **розв'язано** — 169 членів, 74 `.PCK` + 39 `.GCP` + 9 `.ASK` + 6 `.SLD`, розрізає `pd2bnd.py` |
 | Механізм установки палітри | ✅ доведено |
 | Вбудовані 32-байтові палітри `.GCP` / `CHARA.PCK` | ✅ 26 таблиць у `.GCP` (2 кастомні) і 27 записів `CHARA.PCK` |
-| Палітри екранів | ✅ 48-байтові таблиці в EXE (порядок каналів B,R,G); їх знаходить `tools/pal_tables.py`, див. [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) |
+| Палітри екранів | ✅ 48-байтові таблиці в EXE (порядок каналів B,R,G у PD2, G,R,B у PD1); їх знаходить `tools/pal_tables.py`, див. [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) |
 | Кольори прогону `--all` без параметрів | ⚠️ **можуть бути неправильні** — фолбек це шкала PC-98; див. примітку про палітру нижче |
 | `.GCP` як растр | ✅ це display-list для GRCG, і він рендериться — див. [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) |
 | Компресор | ❌ не відновлювався (він є в `CONVERT.EXE`) |
@@ -138,9 +138,13 @@ Display-list'ам потрібен ще один рядок: `.GCP` у PD1 вл�
 всередині блоку, тож для цих двох наборів потрібен `--pal-exe`:
 
 ```powershell
-python pd2gcp.py --all "..\power dolls 1\_unpacked" out\pd1 --pal-exe "..\power dolls 1\_unpacked\PREMIUM.EXE:0xEDF1"
+python pd2gcp.py --all "..\power dolls 1\_unpacked" out\pd1 --pal-exe "..\power dolls 1\_unpacked\PREMIUM.EXE:0xEDF1:G,R,B"
 python pd2gcp.py --pck ..\hdi\PD2D\CHARA.PCK out\chara --pal-exe ..\hdi\PD2D\BRIEFING.EXE:0x234C6
 ```
+
+`:G,R,B` у PD1-прикладі — не прикраса: EXE Power Dolls 1 зберігають свої
+48-байтові таблиці в іншому порядку байтів, ніж PD2, і читання «по-PD2» робить
+портрети маджентовими та зеленими (`docs/PALETTE.md` §1).
 
 Якщо не хочеться вгадувати, яка палітра якому екрану належить, — переберіть
 усе: `pd2sweep.py` розпаковує все, що знайде, збирає всі палітри, які знайде, і
@@ -221,7 +225,7 @@ python pd2extract.py (--all DIR | --pck FILE | --ask FILE) OUTDIR
 | `--palette-dir DIR` | шукати EXE для `--palette auto` тут (типово тека вводу) |
 | `--palette-map FILE.json` | власна відповідність базової назви файла або повного імені джерела до `.pal`; працює лише з `auto`, відносні шляхи — від теки JSON |
 | `--pal FILE.pal` | своя палітра (JASC-PAL, сирі 768 байтів, 48 байтів або текст) |
-| `--pal-exe FILE.EXE:0xOFFSET` | використати 48-байтову палітру екрана з EXE; див. примітку вище |
+| `--pal-exe FILE.EXE:0xOFFSET` | використати 48-байтову палітру екрана з EXE; для PD1 додайте порядок каналів (`FILE.EXE:0xOFFSET:G,R,B`); див. примітку вище |
 | `--raw-geom WxH` | геометрія для «сирого блоку» `.ASK`; за замовчуванням виводиться з `decoded_size` (`S_ROLL.ASK` → 640x320) |
 | `--scale N` | цілочисельне збільшення (nearest) |
 
@@ -268,7 +272,7 @@ python pd2gcp.py --self-test
 | `--all DIR` | усі `.GCP` під DIR і всі display-list'и в його `.PCK` |
 | `--gcp` / `--pck` | один файл / один архів (`--entry N` для одного запису) |
 | `--pal FILE.pal` | палітра для блоків, які її не несуть (усі `.GCP` у PD1) |
-| `--pal-exe FILE.EXE:0xOFFSET` | одна з 48-байтових палітр екранів усередині EXE |
+| `--pal-exe FILE.EXE:0xOFFSET` | одна з 48-байтових палітр екранів усередині EXE; для PD1 додайте порядок каналів (`:G,R,B`) |
 | `--full` | лишити оголошену область `width x height`, а не обрізати за намальованим |
 | `--no-xor` | зупинитися після display-list'а — це сира дельта-маска по рядках |
 | `--dump` | додатково записати `<image>.txt` — декодований список команд |
@@ -342,7 +346,9 @@ save-state зняті з різних екранів. Див. [`docs/PALETTE.md`
 ### `tools/pal_tables.py` — банки палітр усередині EXE
 
 Палітри екранів лежать не поруч із пікселями, а банками 48-байтових таблиць
-усередині самих EXE (порядок каналів **B,R,G**). Інструмент їх знаходить,
+усередині самих EXE (порядок каналів **B,R,G** у Power Dolls 2 і **G,R,B** у
+Power Dolls 1 — це вирішують палітри, зняті з живої гри, див.
+[`docs/PALETTE.md`](docs/PALETTE.uk.md) §1). Інструмент їх знаходить,
 витягує і визначає джерело живого дампа:
 
 ```
@@ -407,7 +413,9 @@ python pd2bnd.py --self-test
 4. кількості: 348 записів `.PCK` + 12 `.ASK` = 360 (плюс «сирий блок»
    `S_ROLL.ASK`, який `pd2extract.py` рендерить як кадр 640x320);
 5. 26/26 `.GCP` мають валідну палітру за зсувом `0xB`, з них рівно 2 не
-   дефолтні;
+   дефолтні, і кожна повторно кодується в ті самі 32 байти файлу (пакований
+   декодер — обернений до рутини запису; порядок каналів був неправильний, поки
+   його не звірили з апаратною шкалою PC-98);
 6. чотири відомі палітри екранів лежать в EXE за задокументованими зсувами
    (порядок каналів B,R,G);
 7. `S_ROLL.ASK` — «сирий блок», його геометрія виводиться як 640x320;
@@ -415,10 +423,12 @@ python pd2bnd.py --self-test
    доходять до закривного `0x7F` рівно тоді, коли в блоці закінчуються байти;
 9. геометрія з заголовка display-list'а для чотирьох відомих блоків
    (`KOGADO.GCP` 24×56, `K_BLANC1.GCP` 48×112, `PD2TITLE.GCP` 80×400,
-   `USAGI.GCP` 10×80).
+   `USAGI.GCP` 10×80);
+10. з `--pd1 DIR`: 24 файли `.GCP` у Power Dolls 1 теж є display-list'ами, а
+    `PREMIUM.EXE` несе стартову палітру PD2 у іншому порядку байтів (G,R,B).
 
 ```
-python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked"
+python tools\verify.py --data "..\power dolls 2 dash HDI\_unpacked\PD2D" --floppy "..\power dolls 2 FDI\_unpacked" --pd1 "..\power dolls 1\_unpacked"
 ```
 
 ### `tools/img_extract.py` — розпакування образу диска
@@ -469,7 +479,7 @@ python tools\render_vram.py dump\Vga.bin out\screen.png [--pal file.pal]
 |---|---|
 | [`docs/FORMAT.md`](docs/FORMAT.uk.md) | **глибокий огляд:** усі контейнери, точний алгоритм кодека, стан, біт-рідер, токени, пастки, розкладка виводу, доведення правильності |
 | [`docs/PALETTE.md`](docs/PALETTE.uk.md) | основи палітр: як вибрати палітру екрана, що означає 32-байтова шкала в `.GCP` і як отримати правильні кольори |
-| [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) | докази й деталі 48-байтових таблиць палітр екранів у EXE, порядок каналів B,R,G і як знаходити/витягувати таблиці |
+| [`docs/PALETTE_TABLES.md`](docs/PALETTE_TABLES.uk.md) | докази й деталі 48-байтових таблиць палітр екранів у EXE — порядок каналів B,R,G у PD2 і G,R,B у PD1 — і як їх знаходити/витягувати |
 | [`docs/ADVANCED_PD2.md`](docs/ADVANCED_PD2.uk.md) | Advanced PD2: розкладка `.fdd` без BPB, збірка `PD2DT.IDX` + `.BND` (169 членів, розв'язано), що це патч-надбудова над PD2 |
 | [`docs/PD1.md`](docs/PD1.uk.md) | Power Dolls 1: шість логотипів `.ASK` плюс 24 display-list'и `.GCP` — його портрети й екрани |
 | [`docs/DISPLAYLIST.md`](docs/DISPLAYLIST.uk.md) | display-list'и розв'язано: модель GRCG, завантажувач і обидва гравці, потік команд, прохід декодування XOR по рядках, палітри, перевірка |

@@ -85,8 +85,8 @@ Three things to keep in mind:
 
 ## 1. The mechanism — proven from the disassembler
 
-The palette writer is at **`BRIEFING.EXE` image `0x10A59`** (the same code
-exists in every graphics EXE; in `CONVERT.EXE` it is image `0x5F9B`).
+The palette writer is at **`CONVERT.EXE` image `0x5F87`** (the same code exists
+in every graphics EXE; in `BRIEFING.EXE` it is image `0x10A69`).
 
 ```c
 /* arguments: struct (far), x, y, flag */
@@ -95,27 +95,85 @@ if (struct[8] >= 0x22 && flag != 0) {
         b0 = es:[bx + 0x0C];        /* bx = pointer to struct + i*2 */
         b1 = es:[bx + 0x0B];
         out(0xA8, b0 >> 4);         /* PALETTE INDEX */
-        out(0xAA, b0 & 15);         /* R */
-        out(0xAC, b1 >> 4);         /* G */
-        out(0xAE, b1 & 15);         /* B */
+        out(0xAA, b0 & 15);         /* GREEN */
+        out(0xAC, b1 >> 4);         /* RED   */
+        out(0xAE, b1 & 15);         /* BLUE  */
     }
 }
 ```
 
-The port order is exactly that: **`0xA8` receives the index**, while
-`0xAA/0xAC/0xAE` receive the components. This follows from the fact that the
-high nibble of the first byte always equals the entry number (`i`), and for the
-default palette the resulting triples come out standard: index 1 → blue,
-2 → green, 3 → cyan, 4 → red, 7 → white.
+`0xA8` receives the index — the high nibble of the first byte always equals the
+entry number `i` — but the three colour ports are **`0xAA` = green, `0xAC` = red,
+`0xAE` = blue**. That is the PC-98 wiring, not an assumption: DOSBox-X
+(`src/hardware/vga_pc98_gdc.cpp`) sets `dac.rgb[].green` and
+`pc98_pal_analog[+0]` on the `0xAA` write, `.red` / `[+1]` on `0xAC` and
+`.blue` / `[+2]` on `0xAE`, and declares the array `/* G R B */`.
 
-### The table format — 32 bytes
+The check that settles it is the game's own ramp, the table inside 24 of the 26
+`.GCP` files. Decoded with the ports as above it is
 
 ```
-byte[2i]   = (index << 4) | R
-byte[2i+1] =  G << 4      | B
+000 00f f00 f0f 0f0 0ff ff0 fff   777 00a a00 a0a 0a0 0aa aa0 aaa
 ```
 
-Example: the default palette → `00 00 | 0f 00 | f0 00 | ff 00 | 00 f0 | …`
+which is exactly the PC-98 hardware reset ramp (`G = i&4`, `R = i&2`, `B = i&1`,
+i.e. 1 = blue, 2 = red, 3 = magenta, 4 = green). Reading the nibbles the other
+way round gives 2 = green and 4 = red — a ramp no PC-98 ships. The same mistake
+turns the packed "artwork" palettes of the Advanced PD2 bundle into green-tinted
+versions of the known-good 48-byte `BRIEFING.EXE 0x234C6` table, which is how it
+was caught: rendering those blocks with the wrong order gives green skin.
+
+![the same Advanced PD2 ending screen read the wrong way round (left) and correctly (right)](img/palette_order_fix.png)
+
+That pair is the bug in one picture: the left frame is what the endings in
+`M_CLR1.PCK` and `AD_END.PCK` looked like while the order was wrong — green skin,
+green background — and the fix is nothing but the two nibbles read the other way
+round. `palette_to_packed(palette_from_packed(x)) == x` byte for byte on all 26
+`.GCP` files is the regression guard (`tools/verify.py` check [5]).
+
+### The 48-byte tables: the byte order is per game
+
+The banks inside the executables are 48 bytes, 3 per entry, but the two games do
+not store the channels in the same order, and only the palettes captured from a
+running game can tell:
+
+| game | EXEs | file order | entry = |
+|---|---|---|---|
+| Power Dolls 2 | `BRIEFING`, `STARTUP`, `PD2SHELL`, `TACTICS`, ... | **B, R, G** | `(byte[3i+1], byte[3i+2], byte[3i+0])` |
+| Power Dolls 1 | `PREMIUM.EXE`, `STARTUP.EXE` | **G, R, B** | `(byte[3i+1], byte[3i+0], byte[3i+2])` |
+
+The evidence: of the 20 frames dumped from DOSBox-X with their palette (each
+`out/vram/pd1/*/palette.pal` is the emulator's real `PC98 DACPAL`, printed as
+R,G,B), 11 match a table in the PD1 executables — and every one of them matches
+under `G,R,B` and none under `B,R,G`. Reading PD1's tables the PD2 way turns
+`CHARA04.GCP`'s blond hair magenta and its blue uniform green.
+
+The invariant that makes this checkable without a capture: `PREMIUM.EXE 0xEDF1`
+and PD2's `STARTUP.EXE 0x9311` are the **same 16 colours stored with the first and
+third bytes exchanged**, so `pd2pal.py`'s tools need the order per game.
+`tools/verify.py --pd1 DIR` enforces exactly that.
+
+Pass it as a third field of the spec:
+
+```
+python pd2pal.py --exe    "power dolls 1/_unpacked/PREMIUM.EXE:0xEDF1:G,R,B" -o out/artwork.pal
+python pd2gcp.py --gcp    CHARA04.GCP out --pal-exe "PREMIUM.EXE:0xEDF1:G,R,B"
+python pd2extract.py --pck FACE.PCK out --pal-exe "BRIEFING.EXE:0x234C6"   # PD2 default is B,R,G
+```
+
+The list of orders is `pd2pal.EXE_ORDERS`; a bare `FILE.EXE:0xOFFSET` keeps using
+the engine default (`B,R,G`), which is what every Power Dolls 2 table needs.
+
+### The packed table format — 32 bytes
+
+```
+byte[2i]   = (index << 4) | GREEN
+byte[2i+1] =  RED << 4    | BLUE
+```
+
+Example: the default ramp → `00 00 | 0f 10 | f0 20 | ff 30 | 00 4f | …`
+(`palette_to_packed` in `pd2pal.py` reproduces the 32 bytes of all 26 `.GCP`
+files exactly).
 
 ---
 

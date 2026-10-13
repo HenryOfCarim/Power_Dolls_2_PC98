@@ -194,7 +194,9 @@ def main() -> int:
     ap.add_argument("--hex", nargs=48, type=lambda v: int(v, 16),
                     help="locate a palette given as 48 hex nibbles (R G B ...)")
     ap.add_argument("--order", choices=sorted(ALL_ORDERS), default="gbr",
-                    help="stored channel order (default gbr = the engine's)")
+                    help="stored channel order: gbr = the engine's, which is what "
+                         "Power Dolls 2 uses; Power Dolls 1's PREMIUM.EXE / "
+                         "STARTUP.EXE need grb")
     ap.add_argument("--tol", type=int, default=1, help="per-component tolerance for --find")
     ap.add_argument("--out", type=Path, help="write the --list inventory here")
     ap.add_argument("--self-test", action="store_true", help="prove the scan can fire")

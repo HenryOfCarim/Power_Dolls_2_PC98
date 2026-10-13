@@ -36,12 +36,13 @@ from pd2pal import (parse_exe_spec, palette_from_exe_table,
 
 # The PC-98 default 16-colour palette, exactly as the game writes it.
 # Taken from the 32-byte packed table at offset 0xB of 24 of the 26 .GCP files,
-# which the writer at BRIEFING.EXE image 0x10A59 pushes to ports 0xA8/0xAA/0xAC/0xAE.
+# which the writer at CONVERT.EXE image 0x5F87 pushes to ports 0xA8/0xAA/0xAC/0xAE
+# (0xAA = green, 0xAC = red, 0xAE = blue, so entry i is G = i&4, R = i&2, B = i&1).
 # Entries 9..15 are the "dim" half (level 10 instead of 15).
-PC98 = [(0x00,0x00,0x00), (0x00,0x00,0xff), (0x00,0xff,0x00), (0x00,0xff,0xff),
-        (0xff,0x00,0x00), (0xff,0x00,0xff), (0xff,0xff,0x00), (0xff,0xff,0xff),
-        (0x77,0x77,0x77), (0x00,0x00,0xaa), (0x00,0xaa,0x00), (0x00,0xaa,0xaa),
-        (0xaa,0x00,0x00), (0xaa,0x00,0xaa), (0xaa,0xaa,0x00), (0xaa,0xaa,0xaa)]
+PC98 = [(0x00,0x00,0x00), (0x00,0x00,0xff), (0xff,0x00,0x00), (0xff,0x00,0xff),
+        (0x00,0xff,0x00), (0x00,0xff,0xff), (0xff,0xff,0x00), (0xff,0xff,0xff),
+        (0x77,0x77,0x77), (0x00,0x00,0xaa), (0xaa,0x00,0x00), (0xaa,0x00,0xaa),
+        (0x00,0xaa,0x00), (0x00,0xaa,0xaa), (0xaa,0xaa,0x00), (0xaa,0xaa,0xaa)]
 
 GRAY = [(_i * 17, _i * 17, _i * 17) for _i in range(16)]
 VIVID = [(0,0,0),(0,0,170),(0,170,0),(0,170,170),(170,0,0),(170,0,170),(170,85,0),(170,170,170),
@@ -148,16 +149,18 @@ def main():
         except ValueError:
             sys.exit(f"--raw-geom wants WxH, got {a.raw_geom!r}")
     if a.pal_exe:
-        path, off = parse_exe_spec(a.pal_exe)
+        path, off, exe_order = parse_exe_spec(a.pal_exe)
         if off is None:
-            sys.exit("--pal-exe needs FILE.EXE:0xOFFSET "
-                     "(list the offsets with `pd2pal.py --exe FILE.EXE`)")
+            sys.exit("--pal-exe needs FILE.EXE:0xOFFSET[:ORDER] "
+                     "(list the offsets with `pd2pal.py --exe FILE.EXE`); the "
+                     "order is B,R,G for Power Dolls 2 and G,R,B for PD1's "
+                     "PREMIUM.EXE / STARTUP.EXE")
         try:
             blob = open(path, 'rb').read()
         except OSError as e:
             sys.exit(f"{path}: {e}")
         try:
-            raw, order = palette_from_exe_table(blob, off)
+            raw, order = palette_from_exe_table(blob, off, exe_order)
         except ValueError as e:
             sys.exit(f"{path}: {e}")
         pal = [(r * 17, g * 17, b * 17) for r, g, b in raw]
